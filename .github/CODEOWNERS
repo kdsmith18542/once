@@ -1,41 +1,41 @@
 # Global owners
-* @keith/once-maintainers
+* @keith
 
 # Core compiler components
-/crates/once-lex/ @keith/lexer-team
-/crates/once-parse/ @keith/parser-team
-/crates/once-hir/ @keith/hir-team
-/crates/once-ty/ @keith/type-system-team
-/crates/once-effects/ @keith/effects-team
-/crates/once-linear/ @keith/linearity-team
-/crates/once-rinf/ @keith/region-team
-/crates/once-mir/ @keith/mir-team
-/crates/once-codegen/ @keith/codegen-team
+/crates/once-lex/ @keith
+/crates/once-parse/ @keith
+/crates/once-hir/ @keith
+/crates/once-ty/ @keith
+/crates/once-effects/ @keith
+/crates/once-linear/ @keith
+/crates/once-rinf/ @keith
+/crates/once-mir/ @keith
+/crates/once-codegen/ @keith
 
 # Runtime and standard library
-/crates/once-runtime/ @keith/runtime-team
-/crates/once-std/ @keith/stdlib-team
+/crates/once-runtime/ @keith
+/crates/once-std/ @keith
 
 # Tools and infrastructure
-/crates/once-cli/ @keith/cli-team
-/crates/once-build/ @keith/build-team
-/crates/once-lsp/ @keith/lsp-team
+/crates/once-cli/ @keith
+/crates/once-build/ @keith
+/crates/once-lsp/ @keith
 
 # Advanced features
-/crates/once-bounds/ @keith/bounds-team
-/crates/once-actors/ @keith/actors-team
-/crates/once-onceo/ @keith/object-team
-/crates/once-linker/ @keith/linker-team
-/crates/once-wasm/ @keith/wasm-team
-/crates/once-lockfile/ @keith/lockfile-team
-/crates/once-explain/ @keith/explain-team
+/crates/once-bounds/ @keith
+/crates/once-actors/ @keith
+/crates/once-onceo/ @keith
+/crates/once-linker/ @keith
+/crates/once-wasm/ @keith
+/crates/once-lockfile/ @keith
+/crates/once-explain/ @keith
 
 # Documentation
-/docs/ @keith/docs-team
-*.md @keith/docs-team
+/docs/ @keith
+*.md @keith
 
 # CI/CD
-/.github/ @keith/devops-team
+/.github/ @keith
 
 # Tests
-/tests/ @keith/testing-team
+/tests/ @keith

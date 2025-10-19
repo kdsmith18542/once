@@ -7,11 +7,7 @@ updates:
       interval: "weekly"
       day: "monday"
       time: "09:00"
-    open-pull-requests-limit: 10
-    reviewers:
-      - "@keith/dependency-team"
-    assignees:
-      - "@keith/dependency-team"
+    open-pull-requests-limit: 5
     commit-message:
       prefix: "deps"
       include: "scope"
@@ -36,11 +32,7 @@ updates:
       interval: "weekly"
       day: "monday"
       time: "09:00"
-    open-pull-requests-limit: 5
-    reviewers:
-      - "@keith/devops-team"
-    assignees:
-      - "@keith/devops-team"
+    open-pull-requests-limit: 3
     commit-message:
       prefix: "ci"
       include: "scope"
