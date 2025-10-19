@@ -1,0 +1,28 @@
+[package]
+name = "once-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Command-line interface for the Once compiler"
+
+[[bin]]
+name = "once"
+path = "src/main.rs"
+
+[dependencies]
+once-lex = { path = "../once-lex" }
+once-parse = { path = "../once-parse" }
+once-hir = { path = "../once-hir" }
+once-ty = { path = "../once-ty" }
+once-effects = { path = "../once-effects" }
+once-linear = { path = "../once-linear" }
+once-rinf = { path = "../once-rinf" }
+once-mir = { path = "../once-mir" }
+once-codegen = { path = "../once-codegen" }
+once-runtime = { path = "../once-runtime" }
+once-std = { path = "../once-std" }
+once-build = { path = "../once-build" }
+once-lsp = { path = "../once-lsp" }
+clap = { workspace = true }
+indicatif = { workspace = true }
+anyhow = { workspace = true }

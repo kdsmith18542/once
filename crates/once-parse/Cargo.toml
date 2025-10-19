@@ -1,0 +1,12 @@
+[package]
+name = "once-parse"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Parser for the Once language"
+
+[dependencies]
+once-lex = { path = "../once-lex" }
+chumsky = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }

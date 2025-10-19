@@ -1,0 +1,27 @@
+// Async/await example
+fn fetch_all(urls: Vec<Str>) -> Result<Vec<Str>, Err> !spawn {
+    let tasks = map(|u| async { http_get(u) }, urls)
+    join_all(tasks)?
+}
+
+fn http_get(url: Str) -> Result<Str, Err> !spawn {
+    // Simulate HTTP request
+    Ok("Response from " + url)
+}
+
+fn map<A, B>(f: fn(A) -> B, xs: Vec<A>) -> Vec<B> {
+    var result = Vec::new()
+    for x in xs {
+        result.push(f(x))
+    }
+    result
+}
+
+fn join_all(tasks: Vec<Task<Result<Str, Err>>>) -> Result<Vec<Str>, Err> {
+    var results = Vec::new()
+    for task in tasks {
+        let result = await task
+        results.push(result?)
+    }
+    Ok(results)
+}

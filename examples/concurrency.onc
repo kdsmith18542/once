@@ -1,0 +1,24 @@
+// Concurrency example with channels and actors
+fn pipeline(input: Chan<Str>, output: Chan<Int>) !spawn {
+    let mid = Chan::new()
+    spawn map_lines(input, mid)
+    spawn parse_to_int(mid, output)
+}
+
+fn map_lines(input: Chan<Str>, output: Chan<Str>) !spawn {
+    for line in input {
+        let transformed = transform(line)
+        output.send(transformed)
+    }
+}
+
+fn parse_to_int(input: Chan<Str>, output: Chan<Int>) !spawn {
+    for line in input {
+        let value = parse_int(line)?
+        output.send(value)
+    }
+}
+
+fn transform(s: Str) -> Str {
+    s.to_uppercase()
+}

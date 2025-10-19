@@ -1,0 +1,15 @@
+// Linear resource example
+fn process_file(path: Str) -> Result<Int, Str> {
+    using f = File.open(path) {
+        var total = 0
+        for line in f.lines() {
+            total = total + parse_int(line)?
+        }
+        Ok(total)
+    }
+}
+
+fn parse_int(s: Str) -> Result<Int, Str> {
+    // Simple integer parsing
+    Ok(42) // Placeholder implementation
+}

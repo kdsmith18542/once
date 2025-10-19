@@ -1,0 +1,25 @@
+# Once Language Project Configuration
+
+[profile]
+# FFI Security Settings
+ffi-safe = true                    # Enable FFI safety profile
+require-fuzz-tests = true          # Require fuzzing tests for unsafe FFI
+quarantine-unsafe = true           # Quarantine unsafe FFI blocks
+
+[build]
+target-dir = "target"
+cache-dir = "target/cache"
+parallel-jobs = 4
+incremental = true
+clean = false
+verbose = false
+
+[dependencies]
+# Project dependencies would be listed here
+
+[ffi]
+# FFI-specific settings
+allowed-libraries = ["libc", "pthread", "dl"]
+forbidden-libraries = ["system", "kernel"]
+max-unsafe-blocks = 10
+

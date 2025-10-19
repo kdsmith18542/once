@@ -1,0 +1,13 @@
+[package]
+name = "once-mir"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Mid-level Intermediate Representation for the Once language"
+
+[dependencies]
+once-hir = { path = "../once-hir" }
+once-ty = { path = "../once-ty" }
+once-rinf = { path = "../once-rinf" }
+once-lex = { path = "../once-lex" }
+thiserror = { workspace = true }

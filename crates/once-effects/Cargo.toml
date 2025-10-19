@@ -1,0 +1,11 @@
+[package]
+name = "once-effects"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Effect system for the Once language"
+
+[dependencies]
+once-hir = { path = "../once-hir" }
+once-ty = { path = "../once-ty" }
+thiserror = { workspace = true }

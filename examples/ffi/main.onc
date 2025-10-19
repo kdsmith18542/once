@@ -1,0 +1,51 @@
+// FFI Example with Fuzzing Test
+// This demonstrates the FFI security enforcement
+
+// Unsafe FFI block - requires fuzzing test
+unsafe ffi[libc] fn strlen(s: *const u8) -> usize {
+    // This would call the actual C strlen function
+    // In a real implementation, this would be unsafe
+    0
+}
+
+// Fuzzing test for the FFI function
+#[fuzz]
+fn fuzz_test_strlen() {
+    let test_string = "Hello, World!";
+    let result = strlen(test_string.as_ptr());
+    // Verify the result is reasonable
+    assert!(result <= test_string.len());
+}
+
+// Another unsafe FFI block
+unsafe ffi[pthread] fn pthread_create(
+    thread: *mut u64,
+    attr: *const u8,
+    start_routine: *const u8,
+    arg: *const u8
+) -> i32 {
+    // This would call the actual pthread_create function
+    0
+}
+
+// Fuzzing test for pthread_create
+#[fuzz]
+fn fuzz_test_pthread_create() {
+    let mut thread_id = 0u64;
+    let result = pthread_create(
+        &mut thread_id,
+        std::ptr::null(),
+        std::ptr::null(),
+        std::ptr::null()
+    );
+    // Verify the result is reasonable
+    assert!(result == 0 || result == -1);
+}
+
+// Main function
+fn main() {
+    let message = "Hello from FFI!";
+    let length = strlen(message.as_ptr());
+    println!("String length: {}", length);
+}
+

@@ -1,0 +1,4 @@
+// Hello World example for Once language
+fn main() -> Unit {
+    print("Hello, Once!")
+}

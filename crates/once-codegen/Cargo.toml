@@ -1,0 +1,19 @@
+[package]
+name = "once-codegen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Code generation for the Once language"
+
+[dependencies]
+once-mir = { path = "../once-mir" }
+once-rinf = { path = "../once-rinf" }
+once-lex = { path = "../once-lex" }
+once-hir = { path = "../once-hir" }
+cranelift = { workspace = true }
+cranelift-codegen = { workspace = true }
+cranelift-frontend = { workspace = true }
+cranelift-native = { workspace = true }
+cranelift-module = { workspace = true }
+cranelift-object = { workspace = true }
+thiserror = { workspace = true }

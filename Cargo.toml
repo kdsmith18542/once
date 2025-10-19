@@ -1,0 +1,60 @@
+[workspace]
+members = [
+    "crates/once-lex",
+    "crates/once-parse",
+    "crates/once-hir",
+    "crates/once-ty",
+    "crates/once-effects",
+    "crates/once-linear",
+    "crates/once-rinf",
+    "crates/once-mir",
+    "crates/once-codegen",
+    "crates/once-runtime",
+    "crates/once-std",
+    "crates/once-build",
+    "crates/once-lsp",
+    "crates/once-cli",
+    "crates/once-bounds",
+    "crates/once-actors",
+    "crates/once-onceo",
+    "crates/once-linker",
+    "crates/once-wasm",
+    "crates/once-lockfile",
+    "crates/once-explain",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/once-lang/once"
+description = "Once: A simple-to-learn systems language with region-based memory management"
+
+[workspace.dependencies]
+# Core dependencies
+logos = "0.14"
+chumsky = "0.9"
+thiserror = "1.0"
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Compiler infrastructure
+cranelift = "0.105"
+cranelift-codegen = "0.105"
+cranelift-frontend = "0.105"
+cranelift-native = "0.105"
+cranelift-module = "0.105"
+cranelift-object = "0.105"
+
+# Runtime
+tokio = { version = "1.0", features = ["full"] }
+crossbeam = "0.8"
+
+# LSP
+tower-lsp = "0.20"
+lsp-types = "0.95"
+
+# CLI
+clap = { version = "4.0", features = ["derive"] }
+indicatif = "0.17"

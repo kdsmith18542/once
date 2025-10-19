@@ -1,0 +1,56 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+*.o
+*.so
+*.dylib
+*.dll
+*.exe
+*.pdb
+
+# Once-specific
+*.onc.bc
+*.onc.ll
+*.onc.s
+*.onc.o
+*.onc.exe
+*.onc.so
+*.onc.dylib
+*.onc.dll
+
+# Test outputs
+test_output/
+benchmark_results/
+coverage/
+
+# Documentation build
+/book/
+/docs/_build/
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Backup files
+*.bak
+*.backup

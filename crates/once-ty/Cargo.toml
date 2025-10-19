@@ -1,0 +1,10 @@
+[package]
+name = "once-ty"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Type system for the Once language"
+
+[dependencies]
+once-hir = { path = "../once-hir" }
+thiserror = { workspace = true }

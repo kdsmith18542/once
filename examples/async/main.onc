@@ -1,0 +1,17 @@
+// Async example in Once
+fn main() -> Unit {
+    let task = spawn(async_task())
+    let result = await task
+    print(result)
+    return
+}
+
+fn async_task() -> Int {
+    // Simulate async work
+    return 42
+}
+
+fn print(msg: Str) -> Unit {
+    // This would be implemented in the standard library
+    return
+}

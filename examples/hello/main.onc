@@ -1,0 +1,12 @@
+// Hello World in Once
+fn main() -> Unit {
+    let message = "Hello, Once!"
+    print(message)
+    return
+}
+
+fn print(msg: Str) -> Unit {
+    // This would be implemented in the standard library
+    // For now, just return
+    return
+}

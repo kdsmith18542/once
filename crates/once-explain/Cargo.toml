@@ -1,0 +1,16 @@
+[package]
+name = "once-explain"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+once-hir = { path = "../once-hir" }
+once-ty = { path = "../once-ty" }
+once-effects = { path = "../once-effects" }
+once-linear = { path = "../once-linear" }
+once-rinf = { path = "../once-rinf" }
+once-lex = { path = "../once-lex" }
+thiserror = "1.0"
+colored = "2.0"
+
+

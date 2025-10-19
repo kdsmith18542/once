@@ -1,0 +1,8 @@
+// Simple async example
+fn main() -> Unit {
+    print("Hello from async example")
+}
+
+fn fetch_data(url: Str) -> Str {
+    "Data from "
+}
