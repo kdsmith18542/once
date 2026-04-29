@@ -32,31 +32,34 @@ pub enum EffectError {
     DuplicateLabels(String),
 }
 
-/// Effect labels for different operations
+/// Effect labels for different operations (aligned with ONCE-003 spec)
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum EffectLabel {
-    /// Async/await operations
-    Async,
-    /// Channel send/receive
-    Channel,
-    /// Spawn operations
+    /// I/O operations (file, network, console)
+    Io,
+    /// Network operations
+    Net,
+    /// Spawn operations (creating tasks/actors)
     Spawn,
-    /// Error handling
-    Error,
-    /// Resource management
-    Resource,
-    /// Custom effect
+    /// Time operations (timers, sleep)
+    Time,
+    /// Foreign function interface
+    Ffi,
+    /// Non-deterministic operations
+    NonDet,
+    /// Custom effect (for extensions)
     Custom(String),
 }
 
 impl fmt::Display for EffectLabel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            EffectLabel::Async => write!(f, "Async"),
-            EffectLabel::Channel => write!(f, "Channel"),
-            EffectLabel::Spawn => write!(f, "Spawn"),
-            EffectLabel::Error => write!(f, "Error"),
-            EffectLabel::Resource => write!(f, "Resource"),
+            EffectLabel::Io => write!(f, "io"),
+            EffectLabel::Net => write!(f, "net"),
+            EffectLabel::Spawn => write!(f, "spawn"),
+            EffectLabel::Time => write!(f, "time"),
+            EffectLabel::Ffi => write!(f, "ffi"),
+            EffectLabel::NonDet => write!(f, "nondet"),
             EffectLabel::Custom(name) => write!(f, "{}", name),
         }
     }
@@ -295,11 +298,11 @@ impl EffectChecker {
                         ty: Type::Unit,
                     },
                     "await" => EffectRow::Single {
-                        label: EffectLabel::Async,
+                        label: EffectLabel::Spawn,
                         ty: Type::Unit,
                     },
                     "send" | "recv" => EffectRow::Single {
-                        label: EffectLabel::Channel,
+                        label: EffectLabel::Io,
                         ty: Type::Unit,
                     },
                     _ => EffectRow::Empty,
