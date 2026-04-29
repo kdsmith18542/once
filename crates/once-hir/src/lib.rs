@@ -39,9 +39,16 @@ pub struct HirFnDecl {
     pub name: String,
     pub params: Vec<HirParam>,
     pub return_type: Option<HirType>,
+    pub effects: Option<HirEffectRow>,
     pub body: HirBlock,
     pub is_public: bool,
     pub span: Option<(usize, usize)>,
+}
+
+/// Effect row for HIR
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HirEffectRow {
+    pub effects: Vec<String>,
 }
 
 /// Resolved function parameter
@@ -235,7 +242,7 @@ impl HirBuilder {
         }
     }
 
-    fn resolve_fn_decl(&mut self, fn_decl: FnDecl) -> HirFnDecl {
+fn resolve_fn_decl(&mut self, fn_decl: FnDecl) -> HirFnDecl {
         let params = fn_decl.params.into_iter()
             .map(|param| HirParam {
                 name: param.name.clone(),
@@ -246,10 +253,16 @@ impl HirBuilder {
 
         let body = self.resolve_block(fn_decl.body);
 
+        // Convert effect row
+        let effects = fn_decl.effects.map(|e| HirEffectRow {
+            effects: e.effects,
+        });
+
         HirFnDecl {
             name: fn_decl.name,
             params,
             return_type: fn_decl.return_type.map(|t| self.resolve_type(t)),
+            effects,
             body,
             is_public: false, // Will be determined by visibility analysis
             span: fn_decl.span.map(|s| (s.start, s.end)),

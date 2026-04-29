@@ -37,12 +37,19 @@ pub enum Item {
     LetDecl(LetDecl),
 }
 
+/// Effect row for function effects
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EffectRow {
+    pub effects: Vec<String>,
+}
+
 /// Function declaration
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FnDecl {
     pub name: String,
     pub params: Vec<Param>,
     pub return_type: Option<Type>,
+    pub effects: Option<EffectRow>,
     pub body: Block,
     pub span: Option<Span>,
 }
@@ -265,11 +272,55 @@ impl OnceParser {
             return Err("Expected ')'".to_string());
         }
 
-        // return type
+// return type
         let return_type = if let Some(t) = tokens.peek() {
             if matches!(t.token, Token::Arrow) {
                 tokens.next(); // consume ->
                 Some(Self::parse_type(tokens)?)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // effects: !Effect or ![Effect, Effect, ...]
+        let effects = if let Some(t) = tokens.peek() {
+            if matches!(t.token, Token::Bang) {
+                tokens.next(); // consume !
+                if let Some(t) = tokens.peek() {
+                    if matches!(t.token, Token::LBracket) {
+                        // ![effect1, effect2, ...]
+                        tokens.next(); // consume [
+                        let mut effect_list = Vec::new();
+                        loop {
+                            match tokens.peek() {
+                                Some(TokenWithSpan { token: Token::Ident(name), .. }) => {
+                                    effect_list.push(name.clone());
+                                    tokens.next();
+                                }
+                                Some(TokenWithSpan { token: Token::RBracket, .. }) => {
+                                    tokens.next();
+                                    break;
+                                }
+                                Some(TokenWithSpan { token: Token::Comma, .. }) => {
+                                    tokens.next();
+                                }
+                                _ => break,
+                            }
+                        }
+                        Some(EffectRow { effects: effect_list })
+                    } else if let Some(TokenWithSpan { token: Token::Ident(name), .. }) = tokens.peek() {
+                        // !effect (single effect)
+                        let effect_name = name.clone();
+                        tokens.next();
+                        Some(EffectRow { effects: vec![effect_name] })
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
             } else {
                 None
             }
@@ -294,6 +345,7 @@ impl OnceParser {
             name,
             params,
             return_type,
+            effects,
             body,
             span: Some(start_span),
         })

@@ -267,7 +267,16 @@ But **no actual build orchestration code** observed (no `build()` method that wa
 - **Acceptance:** `using` examples from `examples/linear_resources.onc` parse and typecheck
 - **Validation:** Add integration test that verifies `consume()` is inserted and called
 
-#### 1.3 Implement Effect Annotations `![]` (P1 - High)
+#### 1.3 Implement Effect Annotations `![]` (P1 - High) ✅ DONE
+- **Files:** `once-parse/src/lib.rs`, `once-hir/src/lib.rs`
+- **Completed:**
+  1. ✅ Added `EffectRow` struct with `effects: Vec<String>` to parser AST
+  2. ✅ Added `effects: Option<EffectRow>` field to `FnDecl`
+  3. ✅ Parser handles `!Effect` (single) and `![Effect1, Effect2]` (multiple)
+  4. ✅ Added `HirEffectRow` to HIR with same structure
+  5. ✅ Updated HIR builder to pass effects through
+- **Acceptance:** Functions with `!io`, `![io, spawn]` parse and appear in AST/HIR
+- **Validation:** Parser accepts effect annotation syntax
 - **Files:** `once-parse/src/lib.rs`, `once-hir/src/lib.rs`, `once-ty/src/lib.rs`, `once-effects/src/lib.rs`
 - **Tasks:**
   1. Extend lexer if needed: `Token::Bang` already exists; need identifier parsing for effect names after `!`
