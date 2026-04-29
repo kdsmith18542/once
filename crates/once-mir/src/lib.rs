@@ -221,12 +221,24 @@ impl MirGenerator {
         // Generate function body
         let body = self.generate_block(&fn_decl.body, &mut statements, &mut local_count, &mut temp_count)?;
 
+        // Add implicit return if the last statement isn't a return
+        let mut statements = body.statements.clone();
+        if statements.is_empty() || !matches!(statements.last().unwrap().op, MirOp::Return { .. }) {
+            statements.push(MirStmt {
+                op: MirOp::Return { value: None },
+                span: Span::new(0, 0, 0, 0),
+                region: None,
+            });
+        }
+
         Ok(MirFunction {
             name: fn_decl.name.clone(),
             params,
             return_type: fn_decl.return_type.clone().unwrap_or(HirType::Unit),
-            body,
-            local_count,
+            body: MirBlock {
+                statements,
+                region: None,
+            },            local_count,
             temp_count,
         })
     }

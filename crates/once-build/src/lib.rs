@@ -276,7 +276,7 @@ impl BuildTool {
     pub fn generate_lockfile(&self) -> Lockfile {
         let mut lockfile = Lockfile::new();
         for (name, node) in &self.build_graph {
-            let hash = BuildTarget::calculate_hash(&node.target.path).unwrap_or_default();
+             let hash = utils::calculate_hash(&node.target.path).unwrap_or_default();
             lockfile.add_entry(LockfileEntry {
                 name: name.clone(),
                 version: node.target.version.clone(),
@@ -961,7 +961,7 @@ impl Lockfile {
         for target in targets {
             let entry = self.entries.iter().find(|e| e.name == target.name);
             if let Some(entry) = entry {
-                let current_hash = BuildTarget::calculate_hash(&target.path)?;
+                 let current_hash = utils::calculate_hash(&target.path)?;
                 if entry.hash != current_hash {
                     return Err(BuildError::DependencyError(format!(
                         "Target '{}' hash mismatch: lockfile={}, current={}",

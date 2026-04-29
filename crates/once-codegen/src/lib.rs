@@ -571,9 +571,14 @@ impl CodeGenerator {
 
     /// Generate object file
     pub fn generate_object_file(&self, program: &CompiledProgram, output_path: &str) -> Result<(), Vec<CodegenError>> {
-        // For now, create a simple object file format
-        // In a real implementation, this would use Cranelift or LLVM
-        
+        // If real Cranelift generated raw object bytes, write them directly.
+        if let Some(bytes) = &program.object_data {
+            std::fs::write(output_path, bytes)
+                .map_err(|e| vec![CodegenError::ObjectFileFailed(format!("Failed to write object file: {}", e))])?;
+            return Ok(());
+        }
+
+        // Fallback: create a simple custom object file format (placeholder)
         let mut object_data = Vec::new();
         
         // Write object file header

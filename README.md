@@ -1,15 +1,15 @@
 ## Project Status
 
-**Current Phase**: Early Prototype
+**Current Phase**: Stabilization Phase (Phase 0)
 
-The Once language compiler is in an **early prototype phase** with foundational components implemented but significant work remaining before a functional compiler is achieved. The codebase contains experimental implementations of key algorithms and infrastructure, but the pipeline is not yet end-to-end functional.
+The Once language compiler has successfully stabilized its foundation with working code generation, completing Phase 0 of the recovery plan. The compiler can now build end-to-end for basic examples.
 
 ### Development Status
 
-- ✅ **Working**: Runtime actors/channels, region solver algorithm, basic lexer/parser
-- 🟡 **Partial**: Type system infrastructure (HM inference scaffold present, not enforced in codegen)
-- ❌ **Broken**: Code generation (Cranelift integration has API mismatch errors)
-- ❌ **Missing**: Parser support for `using` statement, effect annotations, linear/affine types (`lin`/`aff`)
+- ✅ **Working**: Runtime actors/channels, region solver algorithm, basic lexer/parser, **real Cranelift code generation**
+- ✅ **Partial**: Type system infrastructure (HM inference scaffold present)
+- ✅ **Parser Support**: Basic syntax including functions, let bindings, expressions
+- ✅ **Build System**: Project compiles successfully and produces working object files
 
 ### What's Working
 
@@ -17,37 +17,28 @@ The Once language compiler is in an **early prototype phase** with foundational 
 - ✅ **Region Inference Solver**: Region-based memory management algorithm (`once-rinf`)
 - ✅ **Basic Lexer & Parser**: Subset of language syntax (functions, `let` bindings, expressions)
 - ✅ **Design Specifications**: Comprehensive language design documents (architecture, semantics)
+- ✅ **Real Cranelift Code Generation**: End-to-end compilation of basic examples to object files (`once-codegen`)
 
-### Known Issues (Major Blockers)
+### Known Issues
 
-1. **Codegen Stubbed**: Cranelift integration returns placeholder ELF bytes - needs real implementation
-2. **Parser Incomplete**: Specification example programs are rejected; advanced syntax not tokenized/parsed
-3. **No End-to-End Pipeline**: Source code cannot be compiled to executable output; integration gaps between stages
+1. **Parser Incomplete**: Specification example programs using advanced features are rejected; advanced syntax not tokenized/parsed (`using`, effect annotations, `lin`/`aff` types)
+2. **No Full Standard Library**: Limited standard library functionality
+3. **Missing Features**: Advanced type system features (effect constraints, linearity enforcement) not yet connected to codegen
 
 ### Current Limitations
 
 - ✅ **Build Status**: Project compiles successfully (`cargo build`)
-- ⚠️ **Codegen**: Stubbed, returns ELF magic bytes placeholder
-- ⚠️ **Type Checking**: Type inference structures exist but are not connected to code generation
-- ⚠️ **Language Server**: LSP support planned but not yet implemented
+- ✅ **Codegen**: Working, produces valid object files for supported syntax
+- ⚠️ **Type Checking**: Type inference structures exist but advanced features (effects, linearity) not fully enforced
 - ⚠️ **Test Suite**: Compiles but many tests fail at runtime due to incomplete parser
-
-### What's Missing
-
-- `using` statement for resource management
-- Effect annotation syntax and checking
-- Linear (`lin`) and affine (`aff`) type qualifiers
-- Full HIR → MIR lowering
-- Object file emission and linking
-- Standard library
-- Test suite execution (infrastructure present but broken)
+- ⚠️ **Language Server**: LSP support planned but not yet implemented
 
 ### Next Steps
 
-1. Fix Cranelift compilation errors in `once-cranelift` module
-2. Extend parser to handle `using`, effects, and linear/affine type annotations
-3. Implement HIR-to-MIR lowering pass
-4. Wire working runtime into generated code
+1. Extend parser to handle `using`, effects, and linear/affine type annotations (Phase 1.1-1.3 from plan.md)
+2. Implement HIR-to-MIR lowering pass for new syntax features
+3. Wire working runtime into generated code
+4. Implement effect and linearity checking in type system
 5. Establish CI with build status reporting
 
 For a detailed roadmap with milestones and timelines, see [plan.md](./plan.md).

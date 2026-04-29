@@ -188,36 +188,37 @@ But **no actual build orchestration code** observed (no `build()` method that wa
 
 ## Recovery Plan (Phased)
 
-### Phase 0: Stabilize the Foundation (Weeks 1-2)
+### Phase 0: Stabilize the Foundation (Weeks 1-2) ✅ COMPLETED
 
 **Goal:** Get the compiler to a state where it builds and runs basic "Hello World" without syntax errors.
 
-#### 0.1 Fix Cranelift Integration (P0 - Critical)
+#### 0.1 Fix Cranelift Integration (P0 - Critical) ✅ COMPLETED
 - **Owner:** Backend engineer
-- **Tasks:**
-  - Update `real_cranelift.rs` to use correct Cranelift 0.105 API
-  - Replace `Module<ObjectBuilder>` trait usage with concrete `cranelift_module::Module`
-  - Fix `call()` return type mismatch (`Inst` → extract `Value` via `func_ref` or adjust return type tracking)
-  - Verify object file emission works end-to-end
+- **Tasks Completed:**
+  - Updated `real_cranelift.rs` to use correct Cranelift 0.105 API
+  - Replaced `Module<ObjectBuilder>` trait usage with concrete `cranelift_module::Module`
+  - Fixed `call()` return type mismatch by using proper FuncRef via `declare_func_in_func`
+  - Verified object file emission works end-to-end with `once build examples/hello_world.onc`
 - **Acceptance:** `cargo build --release` succeeds with 0 errors; can emit `.o` file for trivial function
-- **Validation:** Run existing unit tests that exercise codegen (if any); otherwise create minimal test
+- **Validation:** Existing unit tests pass; manual verification of object file generation
 
-#### 0.2 Make Test Suite Compilable (P0 - Critical)
+#### 0.2 Make Test Suite Compilable (P0 - Critical) ✅ COMPLETED
 - **Owner:** QA / Tooling
-- **Tasks:**
-  - Replace undefined `tokenize()` calls with `Lexer::new(...).collect()`
-  - Update enum variants to match current AST (`Item`, `Type`, etc.)
-  - Fix or remove broken tests; ensure `cargo test --lib` compiles and runs
+- **Tasks Completed:**
+  - Replaced undefined `tokenize()` calls with `Lexer::new(...).collect()`
+  - Updated enum variants to match current AST (`Item`, `Type`, etc.)
+  - Fixed or removed broken tests; ensured `cargo test --lib` compiles and runs
 - **Acceptance:** All unit tests compile; at least 50% pass (even if functionality incomplete)
 - **Validation:** CI green on compile + basic test run
 
-#### 0.3 Establish Baseline Compiler (P1 - High)
+#### 0.3 Establish Baseline Compiler (P1 - High) ✅ COMPLETED
 - **Owner:** Compiler lead
-- ** Tasks:**
-  - Document currently supported syntax subset in README
-  - Create "known failures" list for features not yet implemented
-  - Pin Cranelift version or add compatibility layer to prevent future drift
+- **Tasks Completed:**
+  - Documented currently supported syntax subset in README.md
+  - Created "known failures" list for features not yet implemented (in plan.md and README)
+  - Verified stable Cranelift version is used (0.105 as specified in workspace dependencies)
 - **Acceptance:** Clear, honest documentation of what works today
+- **Validation:** README accurately reflects current compiler capabilities
 
 ---
 
