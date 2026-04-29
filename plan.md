@@ -327,7 +327,14 @@ But **no actual build orchestration code** observed (no `build()` method that wa
 
 ---
 
-### Phase 2: Type System & Semantic Analysis (Weeks 7-10)
+### Phase 2: Type System & Semantic Analysis (Weeks 7-10) ✅ DONE
+
+**Completed:**
+- 2.1 ✅ Hindley-Milner: TypeVar, TypeScheme, constraints, unification all in place
+- 2.2 ✅ Region Inference: RegionDag and RegionSolver implemented; stubbed in codegen
+- 2.3 ✅ Effect Constraint Solving: EffectRow with row polymorphism (Var, Union, Intersection)
+- 2.4 ✅ Linearity Integration: Type::Linear/Affine in type system; LinearityChecker tracks usage
+- 2.5 ✅ Row-Polymorphic Effects: EffectRow enum supports Vars, Union, Intersection
 
 #### 2.1 Complete Hindley-Milner Inference (P1 - High)
 - **Files:** `once-ty/src/lib.rs`
