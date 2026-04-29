@@ -26,6 +26,7 @@ members = [
     "crates/once-wasm",
     "crates/once-lockfile",
     "crates/once-explain",
+    "crates/once-opt",
 ]
 
 [workspace.package]

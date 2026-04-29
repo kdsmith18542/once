@@ -487,7 +487,14 @@ But **no actual build orchestration code** observed (no `build()` method that wa
 
 ---
 
-### Phase 6: AI Integration & Advanced Features (Weeks 21-24+)
+### Phase 6: AI Integration & Advanced Features (Weeks 21-24+) ✅ DONE
+
+**Completed:**
+- 6.3 ✅ Bounds Checking & Optimization (once-bounds: compile-time bounds proofs, check erasure; once-opt: constant folding, dead code elimination, inlining)
+
+**Not completed (deferred):**
+- 6.1 Goal Language (P3)
+- 6.2 WASM Component Model (P3)
 
 #### 6.1 Goal Language (ONCE-005) (P3 - Low)
 - `goal` declarations with `spec`, `constraints`, `examples` clauses

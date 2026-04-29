@@ -1,0 +1,9 @@
+[package]
+name = "once-opt"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+once-hir = { path = "../once-hir" }
+once-mir = { path = "../once-mir" }
+thiserror = "1.0"
