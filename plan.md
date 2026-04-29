@@ -419,7 +419,12 @@ But **no actual build orchestration code** observed (no `build()` method that wa
 
 ---
 
-### Phase 4: Standard Library & Examples (Weeks 15-17)
+### Phase 4: Standard Library & Examples (Weeks 15-17) ✅ DONE
+
+**Completed:**
+- 4.1 ✅ Build Real Standard Library (1917 lines: FileHandle, String, Vec, HashMap, TcpListener, etc.)
+- 4.2 ✅ Capability-Based FFI (capabilities field in BuildTarget, FfiSecurityError)
+- 4.3 ✅ Example Programs (5 examples: hello_world, linear_resources, concurrency, async_example, simple_async)
 
 #### 4.1 Build Real Standard Library (P2 - Medium)
 - Replace `once-std` wrappers around `std` with:
@@ -443,7 +448,15 @@ But **no actual build orchestration code** observed (no `build()` method that wa
 
 ---
 
-### Phase 5: Tooling & Polish (Weeks 18-20)
+### Phase 5: Tooling & Polish (Weeks 18-20) ✅ DONE
+
+**Completed:**
+- 5.3 ✅ Build System Completion (added Lockfile struct, generation, validation, integration with BuildTool)
+- 5.4 ✅ CI/CD & Quality Gates (CI already has: fmt, clippy, test, build --release, security audit)
+
+**Not completed (deferred):**
+- 5.1 Language Server (P2)
+- 5.2 Explain & Debug Tools (P2)
 
 #### 5.1 Language Server (P2 - Medium)
 - Complete LSP features: diagnostics on parse/type errors, completions, go-to-definition

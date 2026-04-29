@@ -272,6 +272,38 @@ impl BuildTool {
         Ok(())
     }
 
+    /// Generate lockfile from current build graph
+    pub fn generate_lockfile(&self) -> Lockfile {
+        let mut lockfile = Lockfile::new();
+        for (name, node) in &self.build_graph {
+            let hash = BuildTarget::calculate_hash(&node.target.path).unwrap_or_default();
+            lockfile.add_entry(LockfileEntry {
+                name: name.clone(),
+                version: node.target.version.clone(),
+                hash,
+                source: node.target.path.display().to_string(),
+                timestamp: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
+            });
+        }
+        lockfile
+    }
+
+    /// Save lockfile to file
+    pub fn save_lockfile(&self, path: &Path) -> Result<(), BuildError> {
+        let lockfile = self.generate_lockfile();
+        lockfile.write_to_file(path)
+    }
+
+    /// Load and validate lockfile
+    pub fn validate_lockfile(&self, path: &Path) -> Result<(), BuildError> {
+        let lockfile = Lockfile::read_from_file(path)?;
+        let targets: Vec<BuildTarget> = self.build_graph.values().map(|n| n.target.clone()).collect();
+        lockfile.validate(&targets)
+    }
+
     /// Build specific target
     pub fn build_target(&mut self, target_name: &str) -> Result<(), BuildError> {
         // Get dependencies first
@@ -868,6 +900,83 @@ impl FfiSecurityChecker {
             }
         }
         String::new()
+    }
+}
+
+/// Lockfile entry for a dependency
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct LockfileEntry {
+    pub name: String,
+    pub version: String,
+    pub hash: String,
+    pub source: String,
+    pub timestamp: u64,
+}
+
+/// Lockfile for reproducible builds
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Lockfile {
+    pub version: String,
+    pub entries: Vec<LockfileEntry>,
+    pub generated_at: u64,
+}
+
+impl Lockfile {
+    /// Create a new lockfile
+    pub fn new() -> Self {
+        Self {
+            version: "1.0.0".to_string(),
+            entries: Vec::new(),
+            generated_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        }
+    }
+
+    /// Add a dependency entry
+    pub fn add_entry(&mut self, entry: LockfileEntry) {
+        self.entries.push(entry);
+    }
+
+    /// Write lockfile to disk
+    pub fn write_to_file(&self, path: &Path) -> Result<(), BuildError> {
+        let json = serde_json::to_string_pretty(self)
+            .map_err(|e| BuildError::FileError(format!("Serialize lockfile: {}", e)))?;
+        fs::write(path, json)
+            .map_err(|e| BuildError::FileError(format!("Write lockfile: {}", e)))?;
+        Ok(())
+    }
+
+    /// Read lockfile from disk
+    pub fn read_from_file(path: &Path) -> Result<Self, BuildError> {
+        let content = fs::read_to_string(path)
+            .map_err(|e| BuildError::FileError(format!("Read lockfile: {}", e)))?;
+        serde_json::from_str(&content)
+            .map_err(|e| BuildError::FileError(format!("Parse lockfile: {}", e)))
+    }
+
+    /// Validate that lockfile matches current dependencies
+    pub fn validate(&self, targets: &[BuildTarget]) -> Result<(), BuildError> {
+        for target in targets {
+            let entry = self.entries.iter().find(|e| e.name == target.name);
+            if let Some(entry) = entry {
+                let current_hash = BuildTarget::calculate_hash(&target.path)?;
+                if entry.hash != current_hash {
+                    return Err(BuildError::DependencyError(format!(
+                        "Target '{}' hash mismatch: lockfile={}, current={}",
+                        target.name, entry.hash, current_hash
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Default for Lockfile {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
