@@ -435,6 +435,25 @@ impl TypeChecker {
                 }
             }
             HirStmt::Expr(expr) => self.check_expr_with_env(expr, env),
+            HirStmt::Using(using_stmt) => {
+                // Check the init expression
+                let init_type = self.check_expr_with_env(&using_stmt.init, env)?;
+                
+                // Add binding to environment for the body (mark as linear)
+                // Linear types are represented with Linear wrapper in our type system
+                let linear_type = Type::Linear(Box::new(init_type.clone()));
+                env.bindings.insert(using_stmt.name.clone(), TypeScheme {
+                    vars: vec![],
+                    ty: linear_type,
+                });
+                
+                // Check body statements (all should return Unit)
+                for stmt in &using_stmt.body.statements {
+                    self.check_stmt(stmt, env)?;
+                }
+                
+                Ok(Type::Unit)
+            }
         }
     }
 
@@ -524,6 +543,19 @@ impl TypeChecker {
             HirType::Str => Type::Str,
             HirType::Linear(ty) => Type::Linear(Box::new(self.hir_type_to_type(ty))),
             HirType::Affine(ty) => Type::Affine(Box::new(self.hir_type_to_type(ty))),
+            HirType::Array(ty, n) => Type::Array { 
+                element_type: Box::new(self.hir_type_to_type(ty)), 
+                size: Some(*n as u64) 
+            },
+            HirType::Generic(name, args) => Type::UserDefined { 
+                name: name.clone(), 
+                args: args.iter().map(|t| self.hir_type_to_type(t)).collect() 
+            },
+            HirType::Tuple(types) => Type::Tuple(types.iter().map(|t| self.hir_type_to_type(t)).collect()),
+            HirType::Function(args, ret) => Type::Function { 
+                params: args.iter().map(|t| self.hir_type_to_type(t)).collect(), 
+                return_type: Box::new(self.hir_type_to_type(ret)) 
+            },
         }
     }
 

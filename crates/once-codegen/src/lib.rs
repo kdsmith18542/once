@@ -383,6 +383,22 @@ impl CodeGenerator {
                 // Affine types are represented as pointers in the generated code
                 Type::Pointer(Box::new(self.convert_type(inner)))
             }
+            once_hir::HirType::Array(_ty, _n) => {
+                // Arrays represented as pointers for now
+                Type::Pointer(Box::new(Type::Int(IntWidth::I64)))
+            }
+            once_hir::HirType::Generic(_name, _args) => {
+                // Generic types - placeholder
+                Type::Int(IntWidth::I64)
+            }
+            once_hir::HirType::Tuple(_types) => {
+                // Tuples - placeholder as pointer
+                Type::Pointer(Box::new(Type::Unit))
+            }
+            once_hir::HirType::Function(_params, _ret) => {
+                // Function types - pointer to function
+                Type::Pointer(Box::new(Type::Unit))
+            }
         }
     }
 

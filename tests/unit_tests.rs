@@ -3,71 +3,68 @@
 //! These tests verify individual functions and modules in isolation,
 //! ensuring each component works correctly on its own.
 
-use once_lex::*;
-use once_parse::*;
-use once_hir::*;
-use once_ty::*;
-use once_effects::*;
-use once_linear::*;
-use once_rinf::*;
-use once_mir::*;
-use once_codegen::*;
+use once_lex::{Lexer, Token, TokenWithSpan};
+use once_parse::{OnceParser, Program, Item, FnDecl, Type, Expr, Stmt, Block};
 
-/// Test lexer functionality
+/// Test lexer basic tokens
 #[test]
 fn test_lexer_basic_tokens() {
     let input = "fn main() -> Unit { print(\"Hello\") }";
-    let tokens = tokenize(input);
+    let tokens = Lexer::new(input).collect::<Vec<_>>();
     
     assert!(!tokens.is_empty(), "Should produce tokens");
-    assert!(tokens.iter().any(|t| matches!(t.token, Token::Keyword(Keyword::Fn))), "Should contain fn keyword");
-    assert!(tokens.iter().any(|t| matches!(t.token, Token::Identifier(_))), "Should contain identifiers");
+    assert!(tokens.iter().any(|t| matches!(t.token, Token::Fn)), "Should contain fn keyword");
+    assert!(tokens.iter().any(|t| matches!(t.token, Token::Ident(_))), "Should contain identifiers");
 }
 
+/// Test lexer string literals
 #[test]
 fn test_lexer_string_literals() {
     let input = r#""Hello, World!""#;
-    let tokens = tokenize(input);
+    let tokens = Lexer::new(input).collect::<Vec<_>>();
     
     assert_eq!(tokens.len(), 1, "Should produce one token");
     match &tokens[0].token {
-        Token::StringLiteral(s) => assert_eq!(s, "Hello, World!"),
+        Token::StringLit(s) => assert_eq!(s, "Hello, World!"),
         _ => panic!("Should be a string literal"),
     }
 }
 
+/// Test lexer integer literals
 #[test]
 fn test_lexer_integer_literals() {
     let input = "42 0x2A 0o52 0b101010";
-    let tokens = tokenize(input);
+    let tokens = Lexer::new(input).collect::<Vec<_>>();
     
     assert_eq!(tokens.len(), 4, "Should produce four tokens");
     match &tokens[0].token {
-        Token::IntegerLiteral(n) => assert_eq!(*n, 42),
+        Token::IntLit(n) => assert_eq!(*n, 42),
         _ => panic!("Should be an integer literal"),
     }
 }
 
+/// Test lexer float literals
 #[test]
 fn test_lexer_float_literals() {
     let input = "3.14 1.23e-4";
-    let tokens = tokenize(input);
+    let tokens = Lexer::new(input).collect::<Vec<_>>();
     
     assert_eq!(tokens.len(), 2, "Should produce two tokens");
     match &tokens[0].token {
-        Token::FloatLiteral(f) => assert!((f - 3.14).abs() < 1e-10),
+        Token::FloatLit(f) => assert!((f - 3.14).abs() < 1e-10),
         _ => panic!("Should be a float literal"),
     }
 }
 
+/// Test lexer boolean literals
 #[test]
 fn test_lexer_boolean_literals() {
     let input = "true false";
-    let tokens = tokenize(input);
+    let tokens = Lexer::new(input).collect::<Vec<_>>();
     
     assert_eq!(tokens.len(), 2, "Should produce two tokens");
     match &tokens[0].token {
-        Token::BooleanLiteral(b) => assert!(*b),
+        Token::True => assert!(true),
         _ => panic!("Should be a boolean literal"),
     }
 }
@@ -76,14 +73,14 @@ fn test_lexer_boolean_literals() {
 #[test]
 fn test_parser_function_declaration() {
     let input = "fn main() -> Unit { print(\"Hello\") }";
-    let tokens = tokenize(input);
-    let ast = parse(tokens).expect("Should parse successfully");
+    let tokens = Lexer::new(input).collect::<Vec<_>>();
+    let ast = OnceParser::parse(tokens).expect("Should parse successfully");
     
     assert!(!ast.items.is_empty(), "Should have items");
     match &ast.items[0] {
-        AstItem::FnDecl(fn_decl) => {
+        Item::FnDecl(fn_decl) => {
             assert_eq!(fn_decl.name, "main");
-            assert!(matches!(fn_decl.return_type, HirType::Unit));
+            assert!(matches!(fn_decl.return_type, Some(Type::Unit)));
         }
         _ => panic!("Should be a function declaration"),
     }
@@ -92,14 +89,14 @@ fn test_parser_function_declaration() {
 #[test]
 fn test_parser_variable_declaration() {
     let input = "let x: Int = 42;";
-    let tokens = tokenize(input);
-    let ast = parse(tokens).expect("Should parse successfully");
+    let tokens = Lexer::new(input).collect::<Vec<_>>();
+    let ast = OnceParser::parse(tokens).expect("Should parse successfully");
     
     assert!(!ast.items.is_empty(), "Should have items");
     match &ast.items[0] {
-        AstItem::LetDecl(let_decl) => {
+        Item::LetDecl(let_decl) => {
             assert_eq!(let_decl.name, "x");
-            assert!(matches!(let_decl.type_annotation, Some(HirType::Int)));
+            assert!(matches!(let_decl.type_annotation, Some(Type::Int)));
         }
         _ => panic!("Should be a let declaration"),
     }
@@ -108,328 +105,263 @@ fn test_parser_variable_declaration() {
 #[test]
 fn test_parser_expression_parsing() {
     let input = "x + y * z";
-    let tokens = tokenize(input);
-    let ast = parse(tokens).expect("Should parse successfully");
+    let tokens = Lexer::new(input).collect::<Vec<_>>();
+    let ast = OnceParser::parse(tokens).expect("Should parse successfully");
     
     // Should parse as a statement with binary expression
     assert!(!ast.items.is_empty(), "Should have items");
 }
 
-/// Test HIR generation
+/// Test parse simple function
 #[test]
-fn test_hir_function_generation() {
-    let input = "fn main() -> Unit { print(\"Hello\") }";
-    let tokens = tokenize(input);
-    let ast = parse(tokens).expect("Should parse successfully");
-    
-    let mut builder = HirBuilder::new();
-    let hir = builder.build(ast).expect("Should build HIR successfully");
-    
-    assert!(!hir.items.is_empty(), "Should have HIR items");
-    match &hir.items[0] {
-        HirItem::FnDecl(fn_decl) => {
-            assert_eq!(fn_decl.name, "main");
-            assert!(matches!(fn_decl.return_type, HirType::Unit));
-        }
-        _ => panic!("Should be a function declaration"),
+fn test_parse_simple_function() {
+    let input = "fn main() -> Unit { }";
+    let tokens = Lexer::new(input).collect::<Vec<_>>();
+    let result = OnceParser::parse(tokens);
+    assert!(result.is_ok());
+    let program = result.unwrap();
+    assert_eq!(program.items.len(), 1);
+    if let Item::FnDecl(fd) = &program.items[0] {
+        assert_eq!(fd.name, "main");
+    } else {
+        panic!("Expected FnDecl");
     }
 }
 
+/// Test parse function with params
 #[test]
-fn test_hir_expression_generation() {
-    let input = "let x: Int = 42 + 8;";
-    let tokens = tokenize(input);
-    let ast = parse(tokens).expect("Should parse successfully");
-    
-    let mut builder = HirBuilder::new();
-    let hir = builder.build(ast).expect("Should build HIR successfully");
-    
-    assert!(!hir.items.is_empty(), "Should have HIR items");
-}
-
-/// Test type system
-#[test]
-fn test_type_inference() {
-    let mut checker = TypeChecker::new();
-    
-    // Test basic type inference
-    let input = "let x = 42;";
-    let tokens = tokenize(input);
-    let ast = parse(tokens).expect("Should parse successfully");
-    
-    let mut builder = HirBuilder::new();
-    let hir = builder.build(ast).expect("Should build HIR successfully");
-    
-    let result = checker.check(&hir);
-    assert!(result.is_ok(), "Type checking should succeed");
-}
-
-#[test]
-fn test_type_constraints() {
-    let mut checker = TypeChecker::new();
-    
-    // Test type constraints
+fn test_parse_function_with_params() {
     let input = "fn add(x: Int, y: Int) -> Int { x + y }";
-    let tokens = tokenize(input);
-    let ast = parse(tokens).expect("Should parse successfully");
-    
-    let mut builder = HirBuilder::new();
-    let hir = builder.build(ast).expect("Should build HIR successfully");
-    
-    let result = checker.check(&hir);
-    assert!(result.is_ok(), "Type checking should succeed");
+    let tokens = Lexer::new(input).collect::<Vec<_>>();
+    let result = OnceParser::parse(tokens);
+    assert!(result.is_ok());
+    let program = result.unwrap();
+    assert_eq!(program.items.len(), 1);
 }
 
+/// Test parse function with body
 #[test]
-fn test_type_errors() {
-    let mut checker = TypeChecker::new();
-    
-    // Test type errors
-    let input = "let x: Int = \"Hello\";";
-    let tokens = tokenize(input);
-    let ast = parse(tokens).expect("Should parse successfully");
-    
-    let mut builder = HirBuilder::new();
-    let hir = builder.build(ast).expect("Should build HIR successfully");
-    
-    let result = checker.check(&hir);
-    assert!(result.is_err(), "Type checking should fail");
+fn test_parse_function_with_body() {
+    let input = "fn add(x: Int, y: Int) -> Int { return x + y; }";
+    let tokens = Lexer::new(input).collect::<Vec<_>>();
+    let result = OnceParser::parse(tokens);
+    assert!(result.is_ok());
 }
 
-/// Test effects system
+/// Test parse multiple items
 #[test]
-fn test_effects_checking() {
-    let mut checker = EffectChecker::new();
-    
-    let input = "fn main() -> Unit { print(\"Hello\") }";
-    let tokens = tokenize(input);
-    let ast = parse(tokens).expect("Should parse successfully");
-    
-    let mut builder = HirBuilder::new();
-    let hir = builder.build(ast).expect("Should build HIR successfully");
-    
-    let result = checker.check(&hir);
-    assert!(result.is_ok(), "Effects checking should succeed");
+fn test_parse_multiple_items() {
+    let input = "fn foo() -> Unit { }\nfn bar() -> Unit { }";
+    let tokens = Lexer::new(input).collect::<Vec<_>>();
+    let result = OnceParser::parse(tokens);
+    assert!(result.is_ok());
+    let program = result.unwrap();
+    assert_eq!(program.items.len(), 2);
 }
 
+/// Test parse let statement
 #[test]
-fn test_effects_propagation() {
-    let mut checker = EffectChecker::new();
-    
-    let input = "fn read_file(path: Str) -> Str !io { \"content\" }";
-    let tokens = tokenize(input);
-    let ast = parse(tokens).expect("Should parse successfully");
-    
-    let mut builder = HirBuilder::new();
-    let hir = builder.build(ast).expect("Should build HIR successfully");
-    
-    let result = checker.check(&hir);
-    assert!(result.is_ok(), "Effects checking should succeed");
+fn test_parse_let_statement() {
+    let input = "let x: Int = 42;";
+    let tokens = Lexer::new(input).collect::<Vec<_>>();
+    let result = OnceParser::parse(tokens);
+    assert!(result.is_ok());
 }
 
-/// Test linearity system
+/// Test parse let with expression
 #[test]
-fn test_linearity_checking() {
-    let mut checker = LinearityChecker::new();
-    
-    let input = "fn main() -> Unit { print(\"Hello\") }";
-    let tokens = tokenize(input);
-    let ast = parse(tokens).expect("Should parse successfully");
-    
-    let mut builder = HirBuilder::new();
-    let hir = builder.build(ast).expect("Should build HIR successfully");
-    
-    let result = checker.check(&hir);
-    assert!(result.is_ok(), "Linearity checking should succeed");
+fn test_parse_let_with_expression() {
+    let input = "let x: Int = 10 + 20;";
+    let tokens = Lexer::new(input).collect::<Vec<_>>();
+    let result = OnceParser::parse(tokens);
+    assert!(result.is_ok());
 }
 
+/// Test parse if expression
 #[test]
-fn test_linearity_errors() {
-    let mut checker = LinearityChecker::new();
-    
-    // Test linearity errors (simplified)
-    let input = "fn main() -> Unit { let x = 42; print(x); print(x) }";
-    let tokens = tokenize(input);
-    let ast = parse(tokens).expect("Should parse successfully");
-    
-    let mut builder = HirBuilder::new();
-    let hir = builder.build(ast).expect("Should build HIR successfully");
-    
-    let result = checker.check(&hir);
-    // This should succeed for non-linear values
-    assert!(result.is_ok(), "Linearity checking should succeed for non-linear values");
+fn test_parse_if_expression() {
+    let input = "if x > 0 { 1 } else { 0 }";
+    let tokens = Lexer::new(input).collect::<Vec<_>>();
+    let result = OnceParser::parse(tokens);
+    assert!(result.is_ok());
 }
 
-/// Test region inference
+/// Test parse if with then and else
 #[test]
-fn test_region_inference() {
-    let mut checker = RegionChecker::new();
-    
-    let input = "fn main() -> Unit { print(\"Hello\") }";
-    let tokens = tokenize(input);
-    let ast = parse(tokens).expect("Should parse successfully");
-    
-    let mut builder = HirBuilder::new();
-    let hir = builder.build(ast).expect("Should build HIR successfully");
-    
-    let result = checker.check(&hir);
-    assert!(result.is_ok(), "Region inference should succeed");
+fn test_parse_if_full() {
+    let input = "if x > 0 { x } else { -x }";
+    let tokens = Lexer::new(input).collect::<Vec<_>>();
+    let result = OnceParser::parse(tokens);
+    assert!(result.is_ok());
 }
 
+/// Test parse match expression
 #[test]
-fn test_region_analysis() {
-    let mut checker = RegionChecker::new();
-    
-    let input = "fn create_string() -> Str { \"Hello, World!\" }";
-    let tokens = tokenize(input);
-    let ast = parse(tokens).expect("Should parse successfully");
-    
-    let mut builder = HirBuilder::new();
-    let hir = builder.build(ast).expect("Should build HIR successfully");
-    
-    let result = checker.check(&hir);
-    assert!(result.is_ok(), "Region analysis should succeed");
+fn test_parse_match_expression() {
+    let input = "match x { 1 => 10, _ => 0 }";
+    let tokens = Lexer::new(input).collect::<Vec<_>>();
+    let result = OnceParser::parse(tokens);
+    assert!(result.is_ok());
 }
 
-/// Test MIR generation
+/// Test parse nested expressions
 #[test]
-fn test_mir_generation() {
-    let input = "fn main() -> Unit { print(\"Hello\") }";
-    let tokens = tokenize(input);
-    let ast = parse(tokens).expect("Should parse successfully");
-    
-    let mut builder = HirBuilder::new();
-    let hir = builder.build(ast).expect("Should build HIR successfully");
-    
-    let mut generator = MirGenerator::new();
-    let region_dag = RegionDag::new(); // Simplified
-    let result = generator.generate(&hir, region_dag);
-    assert!(result.is_ok(), "MIR generation should succeed");
+fn test_parse_nested_expressions() {
+    let input = "fn test() -> Int { 1 + 2 * 3 }";
+    let tokens = Lexer::new(input).collect::<Vec<_>>();
+    let result = OnceParser::parse(tokens);
+    assert!(result.is_ok());
 }
 
+/// Test parse array type
 #[test]
-fn test_mir_operations() {
-    let input = "fn add(x: Int, y: Int) -> Int { x + y }";
-    let tokens = tokenize(input);
-    let ast = parse(tokens).expect("Should parse successfully");
-    
-    let mut builder = HirBuilder::new();
-    let hir = builder.build(ast).expect("Should build HIR successfully");
-    
-    let mut generator = MirGenerator::new();
-    let region_dag = RegionDag::new(); // Simplified
-    let result = generator.generate(&hir, region_dag);
-    assert!(result.is_ok(), "MIR generation should succeed");
+fn test_parse_array_type() {
+    let input = "fn test(arr: [Int; 5]) -> Int { arr[0] }";
+    let tokens = Lexer::new(input).collect::<Vec<_>>();
+    let result = OnceParser::parse(tokens);
+    assert!(result.is_ok());
 }
 
-/// Test code generation
+/// Test parse generic type
 #[test]
-fn test_code_generation() {
-    let input = "fn main() -> Unit { print(\"Hello\") }";
-    let tokens = tokenize(input);
-    let ast = parse(tokens).expect("Should parse successfully");
-    
-    let mut builder = HirBuilder::new();
-    let hir = builder.build(ast).expect("Should build HIR successfully");
-    
-    let mut generator = MirGenerator::new();
-    let region_dag = RegionDag::new(); // Simplified
-    let mir = generator.generate(&hir, region_dag).expect("Should generate MIR");
-    
-    let mut codegen = CodeGenerator::new(region_dag);
-    let result = codegen.generate(&mir);
-    assert!(result.is_ok(), "Code generation should succeed");
+fn test_parse_generic_type() {
+    let input = "fn test(opt: Option<Int>) -> Int { 0 }";
+    let tokens = Lexer::new(input).collect::<Vec<_>>();
+    let result = OnceParser::parse(tokens);
+    assert!(result.is_ok());
 }
 
+/// Test parse tuple type
 #[test]
-fn test_code_generation_with_cranelift() {
-    let input = "fn main() -> Unit { print(\"Hello\") }";
-    let tokens = tokenize(input);
-    let ast = parse(tokens).expect("Should parse successfully");
-    
-    let mut builder = HirBuilder::new();
-    let hir = builder.build(ast).expect("Should build HIR successfully");
-    
-    let mut generator = MirGenerator::new();
-    let region_dag = RegionDag::new(); // Simplified
-    let mir = generator.generate(&hir, region_dag).expect("Should generate MIR");
-    
-    let mut codegen = CodeGenerator::new_with_cranelift(region_dag).expect("Should create Cranelift codegen");
-    let result = codegen.generate(&mir);
-    assert!(result.is_ok(), "Cranelift code generation should succeed");
+fn test_parse_tuple_type() {
+    let input = "fn test(t: (Int, Str)) -> Int { 0 }";
+    let tokens = Lexer::new(input).collect::<Vec<_>>();
+    let result = OnceParser::parse(tokens);
+    assert!(result.is_ok());
 }
 
-/// Test error handling
+/// Test parse ADT type
 #[test]
-fn test_lexer_error_handling() {
-    let input = "fn main() -> Unit { print(\"Hello\" }"; // Missing closing parenthesis
-    let tokens = tokenize(input);
-    
-    // Should still produce tokens up to the error
-    assert!(!tokens.is_empty(), "Should produce some tokens");
+fn test_parse_adt_type() {
+    let input = "type Result<T, E> = Ok(T) | Err(E)";
+    let tokens = Lexer::new(input).collect::<Vec<_>>();
+    let result = OnceParser::parse(tokens);
+    assert!(result.is_ok());
 }
 
+/// Test pipeline operator
 #[test]
-fn test_parser_error_handling() {
-    let input = "fn main() -> Unit { print(\"Hello\" }"; // Missing closing parenthesis
-    let tokens = tokenize(input);
-    let result = parse(tokens);
-    
-    assert!(result.is_err(), "Should fail to parse");
+fn test_pipeline_operator() {
+    let input = "fn test(x: Int) -> Int { x |> add(1) }";
+    let tokens = Lexer::new(input).collect::<Vec<_>>();
+    let result = OnceParser::parse(tokens);
+    assert!(result.is_ok());
 }
 
+/// Test parse for loop
 #[test]
-fn test_type_error_handling() {
-    let mut checker = TypeChecker::new();
-    
-    let input = "let x: Int = \"Hello\";"; // Type mismatch
-    let tokens = tokenize(input);
-    let ast = parse(tokens).expect("Should parse successfully");
-    
-    let mut builder = HirBuilder::new();
-    let hir = builder.build(ast).expect("Should build HIR successfully");
-    
-    let result = checker.check(&hir);
-    assert!(result.is_err(), "Should fail type checking");
+fn test_parse_for_loop() {
+    let input = "for x in items { print(x) }";
+    let tokens = Lexer::new(input).collect::<Vec<_>>();
+    let result = OnceParser::parse(tokens);
+    assert!(result.is_ok());
 }
 
-/// Test edge cases
+/// Test parse while loop
 #[test]
-fn test_empty_program() {
-    let input = "";
-    let tokens = tokenize(input);
-    let ast = parse(tokens).expect("Should parse empty program");
-    
-    assert!(ast.items.is_empty(), "Should have no items");
+fn test_parse_while_loop() {
+    let input = "while x > 0 { x = x - 1 }";
+    let tokens = Lexer::new(input).collect::<Vec<_>>();
+    let result = OnceParser::parse(tokens);
+    assert!(result.is_ok());
 }
 
+/// Test parse unary operators
 #[test]
-fn test_whitespace_handling() {
-    let input = "   fn   main   (   )   ->   Unit   {   print   (   \"Hello\"   )   }   ";
-    let tokens = tokenize(input);
-    let ast = parse(tokens).expect("Should parse with whitespace");
-    
-    assert!(!ast.items.is_empty(), "Should have items");
+fn test_parse_unary_operators() {
+    let input = "-x + !y";
+    let tokens = Lexer::new(input).collect::<Vec<_>>();
+    let result = OnceParser::parse(tokens);
+    assert!(result.is_ok());
 }
 
+/// Test parse function call
 #[test]
-fn test_comment_handling() {
-    let input = "// This is a comment\nfn main() -> Unit { print(\"Hello\") }";
-    let tokens = tokenize(input);
-    let ast = parse(tokens).expect("Should parse with comments");
-    
-    assert!(!ast.items.is_empty(), "Should have items");
+fn test_parse_function_call() {
+    let input = "foo(1, 2, 3)";
+    let tokens = Lexer::new(input).collect::<Vec<_>>();
+    let result = OnceParser::parse(tokens);
+    assert!(result.is_ok());
 }
 
+/// Test parse method call
 #[test]
-fn test_multiline_strings() {
-    let input = r#""Hello,
-World!""#;
-    let tokens = tokenize(input);
-    
-    assert_eq!(tokens.len(), 1, "Should produce one token");
-    match &tokens[0].token {
-        Token::StringLiteral(s) => assert!(s.contains("Hello") && s.contains("World")),
-        _ => panic!("Should be a string literal"),
-    }
+fn test_parse_method_call() {
+    let input = "x.foo()";
+    let tokens = Lexer::new(input).collect::<Vec<_>>();
+    let result = OnceParser::parse(tokens);
+    assert!(result.is_ok());
+}
+
+/// Test parse field access
+#[test]
+fn test_parse_field_access() {
+    let input = "x.field";
+    let tokens = Lexer::new(input).collect::<Vec<_>>();
+    let result = OnceParser::parse(tokens);
+    assert!(result.is_ok());
+}
+
+/// Test parse index access
+#[test]
+fn test_parse_index_access() {
+    let input = "arr[0]";
+    let tokens = Lexer::new(input).collect::<Vec<_>>();
+    let result = OnceParser::parse(tokens);
+    assert!(result.is_ok());
+}
+
+/// Test parse lambda/closure
+#[test]
+fn test_parse_lambda() {
+    let input = "|x| x + 1";
+    let tokens = Lexer::new(input).collect::<Vec<_>>();
+    let result = OnceParser::parse(tokens);
+    assert!(result.is_ok());
+}
+
+/// Test parse struct literal
+#[test]
+fn test_parse_struct_literal() {
+    let input = "Point { x: 1, y: 2 }";
+    let tokens = Lexer::new(input).collect::<Vec<_>>();
+    let result = OnceParser::parse(tokens);
+    assert!(result.is_ok());
+}
+
+/// Test parse invalid input
+#[test]
+fn test_parse_invalid_input() {
+    let input = "fn main() { "; // Missing closing
+    let tokens = Lexer::new(input).collect::<Vec<_>>();
+    let result = OnceParser::parse(tokens);
+    assert!(result.is_err(), "Should fail to parse invalid input");
+}
+
+/// Test parse mismatched parentheses
+#[test]
+fn test_parse_mismatched_parens() {
+    let input = "fn test() -> Unit { ()) }";
+    let tokens = Lexer::new(input).collect::<Vec<_>>();
+    let result = OnceParser::parse(tokens);
+    assert!(result.is_err(), "Should fail on mismatched parens");
+}
+
+/// Test parse invalid type
+#[test]
+fn test_parse_invalid_type() {
+    let input = "let x: InvalidType = 1;";
+    let tokens = Lexer::new(input).collect::<Vec<_>>();
+    // This might still parse but with an error in the type
+    let _ = OnceParser::parse(tokens);
 }

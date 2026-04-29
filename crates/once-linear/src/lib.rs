@@ -319,6 +319,18 @@ impl LinearityChecker {
             HirStmt::Expr(expr) => {
                 self.check_expr_with_env(expr, env)?;
             }
+            HirStmt::Using(using_stmt) => {
+                // Check init expression
+                self.check_expr_with_env(&using_stmt.init, env)?;
+                // The using variable is always linear
+                env.add_variable(using_stmt.name.clone(), Linearity::Linear);
+                // Check body statements
+                for stmt in &using_stmt.body.statements {
+                    self.check_stmt(stmt, env)?;
+                }
+                // Variable goes out of scope at end of using block - consume it
+                // (linearity enforcement happens at end of block)
+            }
         }
         Ok(())
     }

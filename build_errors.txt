@@ -1,0 +1,642 @@
+﻿cargo : warning: virtual workspace defaulting to `resolver = "1"` despite one or more workspace members being on 
+edition 2021 which implies `resolver = "2"`
+At line:1 char:23
++ cd "G:\BACKUP\once" ; cargo build --release 2>&1 | Out-File -FilePath ...
++                       ~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (warning: virtua...resolver = "2"`:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  |
+  = note: to keep the current resolver, specify `workspace.resolver = "1"` in the workspace root's manifest
+  = note: to use the edition 2021 resolver, specify `workspace.resolver = "2"` in the workspace root's manifest
+  = note: for more details see https://doc.rust-lang.org/cargo/reference/resolver.html#resolver-versions
+warning: unused import: `Span`
+ --> crates\once-hir\src\lib.rs:6:94
+  |
+6 | use once_parse::{Program, Item, FnDecl, LetDecl, Type, Expr, Stmt, Block, BinaryOp, Literal, Span};
+  |                                                                                              ^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> crates\once-hir\src\lib.rs:196:13
+    |
+196 |         let mut imports = Vec::new();
+    |             ----^^^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `context` is never read
+   --> crates\once-hir\src\lib.rs:178:5
+    |
+177 | pub struct HirBuilder {
+    |            ---------- field in this struct
+178 |     context: NameContext,
+    |     ^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `once-hir` (lib) generated 3 warnings (run `cargo fix --lib -p once-hir` to apply 2 suggestions)
+warning: unused import: `HashSet`
+  --> crates\once-ty\src\lib.rs:10:33
+   |
+10 | use std::collections::{HashMap, HashSet};
+   |                                 ^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `once-ty` (lib) generated 1 warning (run `cargo fix --lib -p once-ty` to apply 1 suggestion)
+warning: unused imports: `TypeVar` and `Type`
+  --> crates\once-rinf\src\lib.rs:11:15
+   |
+11 | use once_ty::{Type, TypeVar};
+   |               ^^^^  ^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `once_lex::Span`
+  --> crates\once-rinf\src\lib.rs:12:5
+   |
+12 | use once_lex::Span;
+   |     ^^^^^^^^^^^^^^
+
+warning: `once-rinf` (lib) generated 2 warnings (run `cargo fix --lib -p once-rinf` to apply 2 suggestions)
+warning: unused imports: `Region` and `TypeVar`
+  --> crates\once-effects\src\lib.rs:11:21
+   |
+11 | use once_ty::{Type, TypeVar, Region};
+   |                     ^^^^^^^  ^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `main_effects`
+   --> crates\once-effects\src\lib.rs:447:13
+    |
+447 |         let main_effects = self.checker.check(hir)?;
+    |             ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_main_effects`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `once-effects` (lib) generated 2 warnings (run `cargo fix --lib -p once-effects` to apply 2 suggestions)
+warning: unused imports: `Region`, `TypeVar`, and `Type`
+ --> crates\once-onceo\src\lib.rs:2:15
+  |
+2 | use once_ty::{Type, TypeVar, Region};
+  |               ^^^^  ^^^^^^^  ^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `EffectLabel` and `EffectRow`
+ --> crates\once-onceo\src\lib.rs:3:20
+  |
+3 | use once_effects::{EffectRow, EffectLabel};
+  |                    ^^^^^^^^^  ^^^^^^^^^^^
+
+warning: unused imports: `RegionConstraint` and `RegionDag`
+ --> crates\once-onceo\src\lib.rs:4:17
+  |
+4 | use once_rinf::{RegionConstraint, RegionDag};
+  |                 ^^^^^^^^^^^^^^^^  ^^^^^^^^^
+
+warning: `once-onceo` (lib) generated 3 warnings (run `cargo fix --lib -p once-onceo` to apply 3 suggestions)
+warning: unused import: `JoinHandle`
+  --> crates\once-runtime\src\lib.rs:13:25
+   |
+13 | use std::thread::{self, JoinHandle};
+   |                         ^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `channel`
+   --> crates\once-runtime\src\lib.rs:300:21
+    |
+300 |         if let Some(channel) = self.channels.get(&channel_id) {
+    |                     ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_channel`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `once-runtime` (lib) generated 2 warnings (run `cargo fix --lib -p once-runtime` to apply 2 suggestions)
+warning: unused imports: `TypeVar` and `Type`
+  --> crates\once-mir\src\lib.rs:11:15
+   |
+11 | use once_ty::{Type, TypeVar};
+   |               ^^^^  ^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `HashMap` and `HashSet`
+  --> crates\once-mir\src\lib.rs:14:24
+   |
+14 | use std::collections::{HashMap, HashSet};
+   |                        ^^^^^^^  ^^^^^^^
+
+warning: unused variable: `i`
+   --> crates\once-mir\src\lib.rs:217:14
+    |
+217 |         for (i, param) in fn_decl.params.iter().enumerate() {
+    |              ^ help: if this is intentional, prefix it with an underscore: `_i`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `TypeVar` and `Type`
+  --> crates\once-linear\src\lib.rs:10:15
+   |
+10 | use once_ty::{Type, TypeVar};
+   |               ^^^^  ^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `HashSet`
+  --> crates\once-linear\src\lib.rs:12:33
+   |
+12 | use std::collections::{HashMap, HashSet};
+   |                                 ^^^^^^^
+
+warning: unused import: `BTreeSet as StdBTreeSet`
+  --> crates\once-std\src\lib.rs:12:105
+   |
+12 | use std::collections::{HashMap as StdHashMap, VecDeque, HashSet as StdHashSet, BTreeMap as StdBTreeMap, BTreeSet 
+as StdBTreeSet};
+   |                                                                                                         
+^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `std::path::Path`
+  --> crates\once-std\src\lib.rs:16:5
+   |
+16 | use std::path::Path;
+   |     ^^^^^^^^^^^^^^^
+
+warning: unused import: `std::thread`
+  --> crates\once-std\src\lib.rs:18:5
+   |
+18 | use std::thread;
+   |     ^^^^^^^^^^^
+
+warning: unused variable: `duration`
+    --> crates\once-std\src\lib.rs:1156:21
+     |
+1156 |     pub fn from_now(duration: Duration) -> Self {
+     |                     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_duration`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `duration`
+    --> crates\once-std\src\lib.rs:1178:30
+     |
+1178 |     pub fn extend(&mut self, duration: Duration) -> std::result::Result<(), StdError> {
+     |                              ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_duration`
+
+warning: field `is_linear` is never read
+   --> crates\once-std\src\lib.rs:464:5
+    |
+462 | pub struct Set<T> {
+    |            --- field in this struct
+463 |     data: StdHashSet<T>,
+464 |     is_linear: bool,
+    |     ^^^^^^^^^
+    |
+    = note: `Set` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during 
+dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `is_linear` is never read
+   --> crates\once-std\src\lib.rs:545:5
+    |
+543 | pub struct Map<K, V> {
+    |            --- field in this struct
+544 |     data: StdBTreeMap<K, V>,
+545 |     is_linear: bool,
+    |     ^^^^^^^^^
+    |
+    = note: `Map` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during 
+dead code analysis
+
+warning: field `is_linear` is never read
+   --> crates\once-std\src\lib.rs:638:5
+    |
+636 | pub struct Deque<T> {
+    |            ----- field in this struct
+637 |     data: VecDeque<T>,
+638 |     is_linear: bool,
+    |     ^^^^^^^^^
+    |
+    = note: `Deque` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during 
+dead code analysis
+
+warning: field `is_linear` is never read
+   --> crates\once-std\src\lib.rs:739:5
+    |
+737 | pub struct TcpListener {
+    |            ----------- field in this struct
+738 |     listener: StdTcpListener,
+739 |     is_linear: bool,
+    |     ^^^^^^^^^
+    |
+    = note: `TcpListener` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code 
+analysis
+
+warning: field `is_linear` is never read
+   --> crates\once-std\src\lib.rs:819:5
+    |
+816 | pub struct TcpStream {
+    |            --------- field in this struct
+...
+819 |     is_linear: bool,
+    |     ^^^^^^^^^
+    |
+    = note: `TcpStream` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code 
+analysis
+
+warning: field `is_linear` is never read
+    --> crates\once-std\src\lib.rs:1223:5
+     |
+1221 | pub struct Box<T> {
+     |            --- field in this struct
+1222 |     data: StdArc<T>,
+1223 |     is_linear: bool,
+     |     ^^^^^^^^^
+     |
+     = note: `Box` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during 
+dead code analysis
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> crates\once-std\src\lib.rs:499:17
+    |
+499 |     pub fn iter(&self) -> std::collections::hash_set::Iter<T> {
+    |                 ^^^^^     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+    |                 |
+    |                 the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+    = note: `#[warn(mismatched_lifetime_syntaxes)]` on by default
+help: use `'_` for type paths
+    |
+499 |     pub fn iter(&self) -> std::collections::hash_set::Iter<'_, T> {
+    |                                                            +++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> crates\once-std\src\lib.rs:584:17
+    |
+584 |     pub fn iter(&self) -> std::collections::btree_map::Iter<K, V> {
+    |                 ^^^^^     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+    |                 |
+    |                 the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+584 |     pub fn iter(&self) -> std::collections::btree_map::Iter<'_, K, V> {
+    |                                                             +++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> crates\once-std\src\lib.rs:588:17
+    |
+588 |     pub fn keys(&self) -> std::collections::btree_map::Keys<K, V> {
+    |                 ^^^^^     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+    |                 |
+    |                 the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+588 |     pub fn keys(&self) -> std::collections::btree_map::Keys<'_, K, V> {
+    |                                                             +++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> crates\once-std\src\lib.rs:592:19
+    |
+592 |     pub fn values(&self) -> std::collections::btree_map::Values<K, V> {
+    |                   ^^^^^     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+    |                   |
+    |                   the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+592 |     pub fn values(&self) -> std::collections::btree_map::Values<'_, K, V> {
+    |                                                                 +++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> crates\once-std\src\lib.rs:693:17
+    |
+693 |     pub fn iter(&self) -> std::collections::vec_deque::Iter<T> {
+    |                 ^^^^^     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+    |                 |
+    |                 the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+693 |     pub fn iter(&self) -> std::collections::vec_deque::Iter<'_, T> {
+    |                                                             +++
+
+warning: creating a mutable reference to mutable static
+    --> crates\once-std\src\lib.rs:1656:9
+     |
+1656 |         RESOURCE_MANAGER.as_mut()
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^ mutable reference to mutable static
+     |
+     = note: mutable references to mutable statics are dangerous; it's undefined behavior if any other pointer to the 
+static is used or if any other reference is created for the static while the mutable reference lives
+     = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/static-mut-references.html>
+     = note: `#[warn(static_mut_refs)]` (part of `#[warn(rust_2024_compatibility)]`) on by default
+
+warning: `once-mir` (lib) generated 3 warnings (run `cargo fix --lib -p once-mir` to apply 3 suggestions)
+warning: `once-linear` (lib) generated 2 warnings (run `cargo fix --lib -p once-linear` to apply 2 suggestions)
+warning: `once-std` (lib) generated 17 warnings (run `cargo fix --lib -p once-std` to apply 10 suggestions)
+   Compiling once-lsp v0.1.0 (G:\BACKUP\once\crates\once-lsp)
+   Compiling once-codegen v0.1.0 (G:\BACKUP\once\crates\once-codegen)
+   Compiling clap v4.5.49
+   Compiling wasm-encoder v0.30.0
+   Compiling wasmparser v0.200.0
+   Compiling once-build v0.1.0 (G:\BACKUP\once\crates\once-build)
+   Compiling once-actors v0.1.0 (G:\BACKUP\once\crates\once-actors)
+   Compiling once-linker v0.1.0 (G:\BACKUP\once\crates\once-linker)
+   Compiling once-explain v0.1.0 (G:\BACKUP\once\crates\once-explain)
+   Compiling once-lockfile v0.1.0 (G:\BACKUP\once\crates\once-lockfile)
+   Compiling once-bounds v0.1.0 (G:\BACKUP\once\crates\once-bounds)
+warning: unused import: `once_lex::Span`
+  --> crates\once-codegen\src\lib.rs:12:5
+   |
+12 | use once_lex::Span;
+   |     ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `once_lex::Span`
+ --> crates\once-codegen\src\real_cranelift.rs:9:5
+  |
+9 | use once_lex::Span;
+  |     ^^^^^^^^^^^^^^
+
+warning: unused import: `Region`
+  --> crates\once-codegen\src\real_cranelift.rs:10:17
+   |
+10 | use once_rinf::{Region, RegionDag};
+   |                 ^^^^^^
+
+warning: unused import: `CallConv`
+  --> crates\once-codegen\src\real_cranelift.rs:20:11
+   |
+20 |     isa::{CallConv, CallConv::SystemV},
+   |           ^^^^^^^^
+
+warning: unused import: `cranelift_codegen::ir::Signature`
+  --> crates\once-codegen\src\lib.rs:22:5
+   |
+22 | use cranelift_codegen::ir::Signature;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `cranelift_codegen::isa::CallConv`
+  --> crates\once-codegen\src\lib.rs:23:5
+   |
+23 | use cranelift_codegen::isa::CallConv;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0782]: expected a type, found a trait
+  --> crates\once-codegen\src\real_cranelift.rs:39:13
+   |
+39 |     module: cranelift_module::Module<ObjectBuilder>,
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+help: you might be missing a type parameter
+   |
+37 ~ pub struct RealCraneliftCodegen<T: cranelift_module::Module<ObjectBuilder>> {
+38 |     /// The Cranelift module for code generation
+39 ~     module: T,
+   |
+
+warning: unused imports: `EffectLabel` and `EffectRow`
+ --> crates\once-linker\src\lib.rs:2:20
+  |
+2 | use once_effects::{EffectRow, EffectLabel};
+  |                    ^^^^^^^^^  ^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `TypeVar`
+ --> crates\once-linker\src\lib.rs:3:21
+  |
+3 | use once_ty::{Type, TypeVar};
+  |                     ^^^^^^^
+
+warning: unused imports: `HirLetStmt`, `HirReturnStmt`, and `HirType`
+ --> crates\once-bounds\src\lib.rs:9:55
+  |
+9 | use once_hir::{HirProgram, HirItem, HirExpr, HirStmt, HirType, HirFnDecl, HirBlock, HirLiteral, HirLetStmt, 
+HirReturnStmt};
+  |                                                       ^^^^^^^                                   ^^^^^^^^^^  
+^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+error[E0782]: expected a type, found a trait
+  --> crates\once-codegen\src\real_cranelift.rs:82:22
+   |
+82 |         let module = cranelift_module::Module::new(object_builder);
+   |                      ^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+help: you can add the `dyn` keyword if you want a trait object
+   |
+82 |         let module = <dyn cranelift_module::Module>::new(object_builder);
+   |                      ++++                         +
+
+warning: unused imports: `EffectSummary`, `RegionSummary`, and `TypeSummary`
+ --> crates\once-lockfile\src\lib.rs:1:31
+  |
+1 | use once_onceo::{OnceoModule, EffectSummary, TypeSummary, RegionSummary};
+  |                               ^^^^^^^^^^^^^  ^^^^^^^^^^^  ^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> crates\once-linker\src\lib.rs:114:13
+    |
+114 |         let mut linked_functions = HashMap::new();
+    |             ----^^^^^^^^^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `dependencies`
+   --> crates\once-linker\src\lib.rs:165:58
+    |
+165 |     fn has_circular_dependency(&self, module_name: &str, dependencies: &[String]) -> bool {
+    |                                                          ^^^^^^^^^^^^ help: if this is intentional, prefix it 
+with an underscore: `_dependencies`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `type_summary`
+   --> crates\once-linker\src\lib.rs:211:13
+    |
+211 |         for type_summary in &module.type_summaries {
+    |             ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_type_summary`
+
+warning: unused variable: `end_line`
+   --> crates\once-lsp\src\lib.rs:302:86
+    |
+302 | ..., start_character: u32, end_line: u32, end_character: u32) -> Vec<CodeAction> {
+    |                            ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_end_line`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `end_character`
+   --> crates\once-lsp\src\lib.rs:302:101
+    |
+302 | ...32, end_line: u32, end_character: u32) -> Vec<CodeAction> {
+    |                       ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_end_character`
+
+warning: unused variable: `type_annotation`
+   --> crates\once-bounds\src\lib.rs:127:25
+    |
+127 |             if let Some(type_annotation) = &param.type_annotation {
+    |                         ^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: 
+`_type_annotation`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `array`
+   --> crates\once-bounds\src\lib.rs:310:32
+    |
+310 |     fn get_array_length(&self, array: &HirExpr) -> Result<usize, BoundsError> {
+    |                                ^^^^^ help: if this is intentional, prefix it with an underscore: `_array`
+
+warning: multiple methods are never used
+   --> crates\once-bounds\src\lib.rs:186:8
+    |
+ 96 | impl BoundsChecker {
+    | ------------------ methods in this implementation
+...
+186 |     fn check_array_access(&mut self, array: &HirExpr, index: &HirExpr) -> Result<(), BoundsError> {
+    |        ^^^^^^^^^^^^^^^^^^
+...
+211 |     fn check_array_slice(&mut self, array: &HirExpr, start: &HirExpr, end: &HirExpr) -> Result<(), BoundsError> {
+    |        ^^^^^^^^^^^^^^^^^
+...
+230 |     fn check_array_length(&mut self, array: &HirExpr) -> Result<(), BoundsError> {
+    |        ^^^^^^^^^^^^^^^^^^
+...
+247 |     fn generate_array_access_proof(&self, array: &HirExpr, index: &HirExpr) -> Result<Option<BoundsProof>, 
+BoundsError> {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+284 |     fn generate_variable_constraints(&self, array: &HirExpr, index: &HirExpr) -> Result<Vec<BoundsConstraint>, 
+BoundsError> {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+310 |     fn get_array_length(&self, array: &HirExpr) -> Result<usize, BoundsError> {
+    |        ^^^^^^^^^^^^^^^^
+...
+317 |     fn get_constant_value(&self, expr: &HirExpr) -> Option<usize> {
+    |        ^^^^^^^^^^^^^^^^^^
+...
+325 |     fn extract_variable_name(&self, expr: &HirExpr) -> String {
+    |        ^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `parent`
+   --> crates\once-actors\src\lib.rs:305:33
+    |
+305 |                     if let Some(parent) = &actor_guard.context.parent {
+    |                                 ^^^^^^ help: if this is intentional, prefix it with an underscore: `_parent`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `child_system`
+   --> crates\once-actors\src\lib.rs:311:25
+    |
+311 |                     let child_system = system.clone();
+    |                         ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_child_system`
+
+warning: unused variable: `child_ref_clone`
+   --> crates\once-actors\src\lib.rs:312:25
+    |
+312 |                     let child_ref_clone = child_ref.clone();
+    |                         ^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: 
+`_child_ref_clone`
+
+error[E0308]: mismatched types
+    --> crates\once-codegen\src\real_cranelift.rs:328:50
+     |
+ 328 |                 value_map.insert(result.clone(), res);
+     |                           ------                 ^^^ expected `Value`, found `Inst`
+     |                           |
+     |                           arguments to this method are incorrect
+     |
+help: the return type of this call is `cranelift_codegen::ir::Inst` due to the type of the argument passed
+    --> crates\once-codegen\src\real_cranelift.rs:328:17
+     |
+ 328 |                 value_map.insert(result.clone(), res);
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^---^
+     |                                                  |
+     |                                                  this argument influences the return type of `insert`
+note: method defined here
+    --> C:\Users\Desktop\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib/rustlib/src/rust\library\std\src\collecti
+ons\hash\map.rs:1295:12
+     |
+1295 |     pub fn insert(&mut self, k: K, v: V) -> Option<V> {
+     |            ^^^^^^
+
+error[E0308]: mismatched types
+   --> crates\once-codegen\src\real_cranelift.rs:405:9
+    |
+381 |     ) -> Value {
+    |          ----- expected `cranelift_codegen::ir::Value` because of return type
+...
+405 |         builder.ins().call(info.func_ref, args)
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `Value`, found `Inst`
+
+warning: unreachable pattern
+   --> crates\once-actors\src\lib.rs:538:17
+    |
+538 |                 _ => {
+    |                 ^ no value can reach this
+    |
+note: multiple earlier patterns match some of the same values
+   --> crates\once-actors\src\lib.rs:538:17
+    |
+515 |                 once_hir::HirItem::FnDecl(fn_decl) => {
+    |                 ---------------------------------- matches some of the same values
+...
+528 |                 once_hir::HirItem::LetDecl(let_decl) => {
+    |                 ------------------------------------ matches some of the same values
+...
+538 |                 _ => {
+    |                 ^ collectively making this unreachable
+    = note: `#[warn(unreachable_patterns)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `logger`
+   --> crates\once-actors\src\lib.rs:545:13
+    |
+545 |         let logger = self.spawn("logger".to_string(), behaviors::logger_behavior)?;
+    |             ^^^^^^ help: if this is intentional, prefix it with an underscore: `_logger`
+
+warning: method `save_cache` is never used
+   --> crates\once-build\src\lib.rs:574:8
+    |
+181 | impl BuildTool {
+    | -------------- method in this implementation
+...
+574 |     fn save_cache(&self) -> Result<(), BuildError> {
+    |        ^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+Some errors have detailed explanations: E0308, E0782.
+For more information about an error, try `rustc --explain E0308`.
+warning: `once-codegen` (lib) generated 6 warnings
+error: could not compile `once-codegen` (lib) due to 4 previous errors; 6 warnings emitted
+warning: build failed, waiting for other jobs to finish...
+warning: `once-bounds` (lib) generated 4 warnings (run `cargo fix --lib -p once-bounds` to apply 3 suggestions)
+warning: `once-linker` (lib) generated 5 warnings (run `cargo fix --lib -p once-linker` to apply 5 suggestions)
+warning: `once-actors` (lib) generated 5 warnings (run `cargo fix --lib -p once-actors` to apply 4 suggestions)
+warning: `once-lsp` (lib) generated 2 warnings (run `cargo fix --lib -p once-lsp` to apply 2 suggestions)
+warning: `once-build` (lib) generated 1 warning
+warning: `once-lockfile` (lib) generated 1 warning (run `cargo fix --lib -p once-lockfile` to apply 1 suggestion)

@@ -234,7 +234,7 @@ fn test_lsp_server() {
 
     // Send initialize request
     let init_request = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":null,"capabilities":{}}}"#;
-    if let Some(stdin) = child.stdin.take() {
+    if let Some(mut stdin) = child.stdin.take() {
         use std::io::Write;
         let _ = stdin.write_all(init_request.as_bytes());
     }

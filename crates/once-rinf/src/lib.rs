@@ -193,6 +193,14 @@ impl RegionSolver {
             HirStmt::Expr(expr) => {
                 self.generate_expr_constraints(expr, region)?;
             }
+            HirStmt::Using(using_stmt) => {
+                // Check init expression constraints
+                self.generate_expr_constraints(&using_stmt.init, region.clone())?;
+                // Check body constraints
+                for stmt in &using_stmt.body.statements {
+                    self.generate_stmt_constraints(stmt, region.clone())?;
+                }
+            }
         }
         Ok(())
     }

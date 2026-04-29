@@ -310,6 +310,42 @@ impl MirGenerator {
                 let expr_ops = self.generate_expr(expr, temp_count)?;
                 statements.extend(expr_ops);
             }
+            HirStmt::Using(using_stmt) => {
+                // Generate init expression
+                let init_ops = self.generate_expr(&using_stmt.init, temp_count)?;
+                statements.extend(init_ops);
+                
+                // Allocate local for the variable
+                let local_id = *local_count;
+                *local_count += 1;
+                let local = MirLocation::Local(local_id);
+                
+                // Move init result to local
+                let result_temp = MirLocation::Temp(*temp_count - 1);
+                statements.push(MirStmt {
+                    op: MirOp::Move {
+                        from: result_temp,
+                        to: local.clone(),
+                    },
+                    span: Span::new(0, 0, 0, 0),
+                    region: None,
+                });
+                
+                // Generate body statements
+                for stmt in &using_stmt.body.statements {
+                    let body_ops = self.generate_stmt(stmt, local_count, temp_count)?;
+                    statements.extend(body_ops);
+                }
+                
+                // Generate consume/drop at end of using block
+                statements.push(MirStmt {
+                    op: MirOp::Drop {
+                        location: local,
+                    },
+                    span: Span::new(0, 0, 0, 0),
+                    region: None,
+                });
+            }
         }
 
         Ok(statements)

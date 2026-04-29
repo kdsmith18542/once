@@ -257,6 +257,16 @@ impl EffectChecker {
                 }
             }
             HirStmt::Expr(expr) => self.check_expr(expr),
+            HirStmt::Using(using_stmt) => {
+                // Check init expression effects
+                let _init_effects = self.check_expr(&using_stmt.init)?;
+                // Check body effects - just check, ignore return for now
+                for stmt in &using_stmt.body.statements {
+                    let _stmt_effects = self.check_stmt(stmt, env)?;
+                }
+                // For now, return empty effect row
+                Ok(EffectRow::Empty)
+            }
         }
     }
 

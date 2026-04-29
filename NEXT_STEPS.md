@@ -94,17 +94,25 @@ The Once language compiler has achieved **100% completion** of the original blue
 ## 📊 Immediate Next Steps (Next 2-4 weeks)
 
 ### Week 1-2: Foundation
-1. **Real Cranelift Integration**
-   - Replace placeholder code generation
-   - Implement actual machine code generation
-   - Test with simple programs
+1. **Span Propagation (AST)**
+   - Extend AST to carry token spans (Program, FnDecl, LetDecl)
+   - Propagate spans during parsing using token spans
+   - Add tests ensuring spans are populated (non-zero/Some)
 
-2. **Performance Benchmarking**
+2. **Skeleton Import Resolver**
+   - Add skeleton ImportResolver in crates/once-hir
+   - Wire into Hir build as a no-op placeholder
+   - Ensure compilation succeeds and no behavioral changes
+
+3. **Real Cranelift Integration** (Phase 2 planning)
+   - Placeholder notes added for future work; not implemented yet
+
+4. **Performance Benchmarking**
    - Create benchmark suite
    - Compare with C/Rust/Go
    - Identify optimization opportunities
 
-3. **Documentation**
+5. **Documentation**
    - Write comprehensive README
    - Create user guide
    - Document all CLI commands
@@ -126,6 +134,10 @@ The Once language compiler has achieved **100% completion** of the original blue
    - Prepare for open source release
 
 ## 🎯 Success Metrics
+
+## 🧭 Compliance Snapshot
+- Language Spec (docs/LANGUAGE_SPEC.md): Partial compliance. Implemented end-to-end span propagation for tokens to AST/HIR and basic DX improvements; core memory/effects/concurrency and backends remain to be implemented.
+- Minimal Spec Checklist (once_minimal_language_spec_compiler_plan_merged.md): Partial. Completed: Span propagation scaffolding, AST/HIR plumbing, and ImportResolver scaffold; not yet implementing HM inference, region inference, MIR, or backends.
 
 ### Technical Metrics
 - **Compilation Speed**: < 1s for typical programs

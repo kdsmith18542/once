@@ -15,6 +15,21 @@ pub struct Program {
     pub items: Vec<Item>,
 }
 
+/// Span information propagated from the lexer/token stream.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Span {
+    pub start: usize,
+    pub end: usize,
+    pub line: usize,
+    pub column: usize,
+}
+
+impl From<once_lex::Span> for Span {
+    fn from(s: once_lex::Span) -> Self {
+        Span { start: s.start, end: s.end, line: s.line, column: s.column }
+    }
+}
+
 /// Top-level items in a Once program
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Item {
@@ -29,6 +44,7 @@ pub struct FnDecl {
     pub params: Vec<Param>,
     pub return_type: Option<Type>,
     pub body: Block,
+    pub span: Option<Span>,
 }
 
 /// Function parameter
@@ -36,6 +52,7 @@ pub struct FnDecl {
 pub struct Param {
     pub name: String,
     pub type_annotation: Option<Type>,
+    pub span: Option<Span>,
 }
 
 /// Let declaration (module-level)
@@ -44,6 +61,7 @@ pub struct LetDecl {
     pub name: String,
     pub type_annotation: Option<Type>,
     pub value: Expr,
+    pub span: Option<Span>,
 }
 
 /// Types in Once
@@ -55,12 +73,25 @@ pub enum Type {
     Bool,
     Float,
     Str,
+    /// Linear type: `lin T`
+    Linear(Box<Type>),
+    /// Affine type: `aff T`
+    Affine(Box<Type>),
+    /// Array type: `[T; n]`
+    Array(Box<Type>, usize),
+    /// Generic type: `Option<T>`, `Vec<T>`
+    Generic(String, Vec<Type>),
+    /// Tuple type: `(A, B, C)`
+    Tuple(Vec<Type>),
+    /// Function type: `fn(A) -> B`
+    Function(Vec<Type>, Box<Type>),
 }
 
 /// Block of statements
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Block {
     pub statements: Vec<Stmt>,
+    pub span: Option<Span>,
 }
 
 /// Statements
@@ -69,6 +100,9 @@ pub enum Stmt {
     Let(LetStmt),
     Return(ReturnStmt),
     Expr(Expr),
+    /// Using statement for linear resource management
+    /// `using x = expr { body }` desugars to let + consume at end
+    Using(UsingStmt),
 }
 
 /// Let statement
@@ -77,12 +111,23 @@ pub struct LetStmt {
     pub name: String,
     pub type_annotation: Option<Type>,
     pub value: Expr,
+    pub span: Option<Span>,
+}
+
+/// Using statement for linear resource management
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UsingStmt {
+    pub name: String,
+    pub init: Expr,
+    pub body: Block,
+    pub span: Option<Span>,
 }
 
 /// Return statement
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReturnStmt {
     pub value: Option<Expr>,
+    pub span: Option<Span>,
 }
 
 /// Expressions
@@ -122,6 +167,33 @@ impl fmt::Display for Type {
             Type::Bool => write!(f, "Bool"),
             Type::Float => write!(f, "Float"),
             Type::Str => write!(f, "Str"),
+            Type::Linear(t) => write!(f, "lin {}", t),
+            Type::Affine(t) => write!(f, "aff {}", t),
+            Type::Array(t, n) => write!(f, "[{}; {}]", t, n),
+            Type::Generic(name, args) => {
+                write!(f, "{}<", name)?;
+                for (i, arg) in args.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{}", arg)?;
+                }
+                write!(f, ">")
+            }
+            Type::Tuple(types) => {
+                write!(f, "(")?;
+                for (i, t) in types.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{}", t)?;
+                }
+                write!(f, ")")
+            }
+            Type::Function(args, ret) => {
+                write!(f, "fn (")?;
+                for (i, arg) in args.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{}", arg)?;
+                }
+                write!(f, ") -> {}", ret)
+            }
         }
     }
 }
@@ -153,7 +225,8 @@ impl OnceParser {
 
     fn parse_fn_decl(tokens: &mut std::iter::Peekable<std::vec::IntoIter<TokenWithSpan>>) -> Result<FnDecl, String> {
         // fn
-        tokens.next();
+        let fn_token = tokens.next().ok_or_else(|| "Expected 'fn' token".to_string())?;
+        let start_span = Span::from(fn_token.span);
         
         // name
         let name = match tokens.next() {
@@ -205,12 +278,12 @@ impl OnceParser {
         };
 
         // {
-        if !matches!(tokens.next().map(|t| t.token), Some(Token::LBrace)) {
+        let lb = tokens.next().ok_or_else(|| "Expected '{'".to_string())?;
+        if lb.token != Token::LBrace {
             return Err("Expected '{'".to_string());
         }
-
-        // body
-        let body = Self::parse_block(tokens)?;
+        // body with span from LBrace
+        let body = Self::parse_block_with_span(tokens, Span::from(lb.span))?;
 
         // }
         if !matches!(tokens.next().map(|t| t.token), Some(Token::RBrace)) {
@@ -222,12 +295,14 @@ impl OnceParser {
             params,
             return_type,
             body,
+            span: Some(start_span),
         })
     }
 
     fn parse_let_decl(tokens: &mut std::iter::Peekable<std::vec::IntoIter<TokenWithSpan>>) -> Result<LetDecl, String> {
         // let
-        tokens.next();
+        let let_token = tokens.next().ok_or_else(|| "Expected 'let' token".to_string())?;
+        let start_span = Span::from(let_token.span);
         
         // name
         let name = match tokens.next() {
@@ -269,17 +344,18 @@ impl OnceParser {
             name,
             type_annotation,
             value,
+            span: Some(start_span),
         })
     }
 
-    fn parse_param(tokens: &mut std::iter::Peekable<std::vec::IntoIter<TokenWithSpan>>) -> Result<Param, String> {
-        let name = match tokens.next() {
-            Some(t) => match t.token {
-                Token::Ident(name) => name,
-                _ => return Err("Expected parameter name".to_string()),
-            },
-            None => return Err("Expected parameter name".to_string()),
+fn parse_param(tokens: &mut std::iter::Peekable<std::vec::IntoIter<TokenWithSpan>>) -> Result<Param, String> {
+        // name with span
+        let name_token = tokens.next().ok_or_else(|| "Expected parameter name".to_string())?;
+        let name = match name_token.token {
+            Token::Ident(n) => n,
+            _ => return Err("Expected parameter name".to_string()),
         };
+        let span = Some(Span::from(name_token.span));
 
         let type_annotation = if let Some(t) = tokens.peek() {
             if matches!(t.token, Token::Colon) {
@@ -295,6 +371,7 @@ impl OnceParser {
         Ok(Param {
             name,
             type_annotation,
+            span,
         })
     }
 
@@ -306,14 +383,79 @@ impl OnceParser {
                 Token::Bool => Ok(Type::Bool),
                 Token::Float => Ok(Type::Float),
                 Token::Str => Ok(Type::Str),
-                Token::Ident(name) => Ok(Type::Ident(name)),
+                Token::Lin => {
+                    let inner = Self::parse_type(tokens)?;
+                    Ok(Type::Linear(Box::new(inner)))
+                }
+                Token::Aff => {
+                    let inner = Self::parse_type(tokens)?;
+                    Ok(Type::Affine(Box::new(inner)))
+                }
+                Token::LBracket => {
+                    let elem_type = Self::parse_type(tokens)?;
+                    tokens.next(); // consume ;
+                    let size = match tokens.next() {
+                        Some(TokenWithSpan { token: Token::IntLit(n), .. }) => n as usize,
+                        _ => return Err("Expected array size".to_string()),
+                    };
+                    match tokens.next() {
+                        Some(TokenWithSpan { token: Token::RBracket, .. }) => Ok(Type::Array(Box::new(elem_type), size)),
+                        _ => Err("Expected ]".to_string()),
+                    }
+                }
+                Token::Ident(name) => {
+                    if let Some(TokenWithSpan { token: Token::Lt, .. }) = tokens.peek() {
+                        tokens.next(); // consume <
+                        let mut args = Vec::new();
+                        loop {
+                            args.push(Self::parse_type(tokens)?);
+                            match tokens.peek() {
+                                Some(TokenWithSpan { token: Token::Gt, .. }) => {
+                                    tokens.next();
+                                    break;
+                                }
+                                Some(TokenWithSpan { token: Token::Comma, .. }) => {
+                                    tokens.next();
+                                }
+                                _ => break,
+                            }
+                        }
+                        Ok(Type::Generic(name, args))
+                    } else {
+                        Ok(Type::Ident(name))
+                    }
+                }
+                Token::LParen => {
+                    let mut args = Vec::new();
+                    loop {
+                        match tokens.peek() {
+                            Some(TokenWithSpan { token: Token::RParen, .. }) => {
+                                tokens.next();
+                                break;
+                            }
+                            _ => {
+                                args.push(Self::parse_type(tokens)?);
+                                match tokens.peek() {
+                                    Some(TokenWithSpan { token: Token::Comma, .. }) => {
+                                        tokens.next();
+                                    }
+                                    Some(TokenWithSpan { token: Token::RParen, .. }) => {
+                                        // will be consumed in next iteration
+                                    }
+                                    _ => break,
+                                }
+                            }
+                        }
+                    }
+                    Ok(Type::Tuple(args))
+                }
                 _ => Err("Expected type".to_string()),
             },
             None => Err("Expected type".to_string()),
         }
     }
 
-    fn parse_block(tokens: &mut std::iter::Peekable<std::vec::IntoIter<TokenWithSpan>>) -> Result<Block, String> {
+fn parse_block(tokens: &mut std::iter::Peekable<std::vec::IntoIter<TokenWithSpan>>) -> Result<Block, String> {
         let mut statements = Vec::new();
 
         while let Some(t) = tokens.peek() {
@@ -327,6 +469,10 @@ impl OnceParser {
                     let stmt = Self::parse_return_stmt(tokens)?;
                     statements.push(Stmt::Return(stmt));
                 }
+                Token::Using => {
+                    let stmt = Self::parse_using_stmt(tokens)?;
+                    statements.push(Stmt::Using(stmt));
+                }
                 _ => {
                     let expr = Self::parse_expr(tokens)?;
                     statements.push(Stmt::Expr(expr));
@@ -334,12 +480,22 @@ impl OnceParser {
             }
         }
 
-        Ok(Block { statements })
+        Ok(Block { statements, span: None })
+    }
+
+    fn parse_block_with_span(
+        tokens: &mut std::iter::Peekable<std::vec::IntoIter<TokenWithSpan>>,
+        start_span: Span,
+    ) -> Result<Block, String> {
+        let mut block = Self::parse_block(tokens)?;
+        block.span = Some(start_span);
+        Ok(block)
     }
 
     fn parse_let_stmt(tokens: &mut std::iter::Peekable<std::vec::IntoIter<TokenWithSpan>>) -> Result<LetStmt, String> {
-        // let
-        tokens.next();
+    // let
+    let let_token = tokens.next().ok_or_else(|| "Expected 'let' token".to_string())?;
+    let start_span = Span::from(let_token.span);
         
         // name
         let name = match tokens.next() {
@@ -381,12 +537,14 @@ impl OnceParser {
             name,
             type_annotation,
             value,
+            span: Some(start_span),
         })
     }
 
     fn parse_return_stmt(tokens: &mut std::iter::Peekable<std::vec::IntoIter<TokenWithSpan>>) -> Result<ReturnStmt, String> {
         // return
-        tokens.next();
+        let return_token = tokens.next().ok_or_else(|| "Expected 'return' token".to_string())?;
+        let start_span = Span::from(return_token.span);
 
         let value = if let Some(t) = tokens.peek() {
             if matches!(t.token, Token::Semicolon) || matches!(t.token, Token::RBrace) {
@@ -405,7 +563,36 @@ impl OnceParser {
             }
         }
 
-        Ok(ReturnStmt { value })
+Ok(ReturnStmt { value, span: Some(start_span) })
+    }
+
+    fn parse_using_stmt(tokens: &mut std::iter::Peekable<std::vec::IntoIter<TokenWithSpan>>) -> Result<UsingStmt, String> {
+        // using
+        let using_token = tokens.next().ok_or_else(|| "Expected 'using' token".to_string())?;
+        let start_span = Span::from(using_token.span);
+
+        // name
+        let name = match tokens.next() {
+            Some(t) => match t.token {
+                Token::Ident(name) => name,
+                _ => return Err("Expected variable name after 'using'".to_string()),
+            },
+            None => return Err("Expected variable name after 'using'".to_string()),
+        };
+
+        // =
+        match tokens.next() {
+            Some(TokenWithSpan { token: Token::Assign, .. }) => {}
+            _ => return Err("Expected '=' after variable name".to_string()),
+        }
+
+        // init expression
+        let init = Self::parse_expr(tokens)?;
+
+        // { block }
+        let body = Self::parse_block_with_span(tokens, start_span.clone())?;
+
+        Ok(UsingStmt { name, init, body, span: Some(start_span) })
     }
 
     fn parse_expr(tokens: &mut std::iter::Peekable<std::vec::IntoIter<TokenWithSpan>>) -> Result<Expr, String> {
@@ -475,14 +662,18 @@ impl OnceParser {
                         Ok(Expr::Ident(name))
                     }
                 }
-                       Token::LBrace => {
-                           tokens.next(); // consume {
-                           let block = Self::parse_block(tokens)?;
-                           if !matches!(tokens.next().map(|t| t.token), Some(Token::RBrace)) {
-                               return Err("Expected '}'".to_string());
-                           }
-                           Ok(Expr::Block(block))
-                       }
+                        Token::LBrace => {
+                            // consume '{' and capture its span
+                            let lb = tokens.next().ok_or_else(|| "Expected '{'".to_string())?;
+                            if lb.token != Token::LBrace {
+                                return Err("Expected '{'".to_string());
+                            }
+                            let block = Self::parse_block_with_span(tokens, Span::from(lb.span))?;
+                            if !matches!(tokens.next().map(|t| t.token), Some(Token::RBrace)) {
+                                return Err("Expected '}'".to_string());
+                            }
+                            Ok(Expr::Block(block))
+                        }
                        Token::Spawn => {
                            tokens.next(); // consume spawn
                            Self::expect_token(tokens, Token::LParen)?;
@@ -556,6 +747,168 @@ mod tests {
             assert_eq!(let_decl.value, Expr::Literal(Literal::Int(42)));
         } else {
             panic!("Expected let declaration");
+        }
+    }
+
+    #[test]
+    fn test_span_propagation() {
+        let source = "fn main() -> Unit { return }";
+        let tokens: Vec<_> = Lexer::new(source).collect();
+        let result = OnceParser::parse(tokens).unwrap();
+        // The top-level program should contain a single function declaration
+        assert_eq!(result.items.len(), 1);
+        if let Item::FnDecl(fn_decl) = &result.items[0] {
+            // Span should be populated for the function declaration
+            assert!(fn_decl.span.is_some());
+            // Basic sanity: start should be <= end
+            if let Some(span) = fn_decl.span {
+                assert!(span.start <= span.end);
+            }
+        } else {
+            panic!("Expected FnDecl");
+        }
+    }
+
+    #[test]
+    fn test_span_propagation_param() {
+        let source = "fn add(a: Int) -> Int { return a }";
+        let tokens: Vec<_> = Lexer::new(source).collect();
+        let result = OnceParser::parse(tokens).unwrap();
+        assert_eq!(result.items.len(), 1);
+        if let Item::FnDecl(fn_decl) = &result.items[0] {
+            assert!(fn_decl.span.is_some());
+            assert_eq!(fn_decl.params.len(), 1);
+            let param = &fn_decl.params[0];
+            assert!(param.span.is_some());
+        } else {
+            panic!("Expected FnDecl");
+        }
+    }
+
+    #[test]
+    fn test_span_propagation_return() {
+        let source = "fn main() -> Unit { return 1 }";
+        let tokens: Vec<_> = Lexer::new(source).collect();
+        let program = OnceParser::parse(tokens).unwrap();
+        assert_eq!(program.items.len(), 1);
+        if let Item::FnDecl(fn_decl) = &program.items[0] {
+            assert!(fn_decl.span.is_some());
+            if let Some(first_stmt) = fn_decl.body.statements.get(0) {
+                if let Stmt::Return(ret) = first_stmt {
+                    assert!(ret.span.is_some());
+                } else {
+                    panic!("Expected Return statement in function body");
+                }
+            } else {
+                panic!("Function body is empty");
+            }
+        } else {
+            panic!("Expected FnDecl");
+        }
+    }
+
+    #[test]
+    fn test_span_propagation_block() {
+        let source = "fn main() -> Unit { let x = 42; return }";
+        let tokens: Vec<_> = Lexer::new(source).collect();
+        let program = OnceParser::parse(tokens).unwrap();
+        assert_eq!(program.items.len(), 1);
+        if let Item::FnDecl(fn_decl) = &program.items[0] {
+            assert!(fn_decl.body.span.is_some());
+        } else {
+            panic!("Expected FnDecl");
+        }
+    }
+
+    #[test]
+    fn test_span_propagation_block_multiline() {
+        let source = "fn main() -> Unit {\n  let a = 1;\n  let b = 2;\n  return\n}";
+        let tokens: Vec<_> = Lexer::new(source).collect();
+        let program = OnceParser::parse(tokens).unwrap();
+        assert_eq!(program.items.len(), 1);
+        if let Item::FnDecl(fn_decl) = &program.items[0] {
+            assert!(fn_decl.body.span.is_some());
+            if let Some(span) = fn_decl.body.span {
+                assert!(span.start <= span.end);
+            }
+        } else {
+            panic!("Expected FnDecl");
+        }
+    }
+
+    #[test]
+    fn test_span_propagation_inner_block_span() {
+        // Ensure an inner block used as an expression has a span
+        let source = "fn main() -> Unit { let x = { 1; }; }";
+        let tokens: Vec<_> = Lexer::new(source).collect();
+        let program = OnceParser::parse(tokens).unwrap();
+        assert_eq!(program.items.len(), 1);
+        if let Item::FnDecl(fn_decl) = &program.items[0] {
+            // first statement should be a Let with a Block as its value
+            if let Some(Stmt::Let(let_stmt)) = fn_decl.body.statements.get(0) {
+                if let Expr::Block(inner_block) = &let_stmt.value {
+                    assert!(inner_block.span.is_some());
+                } else {
+                    panic!("Expected inner Block as value of Let statement");
+                }
+            } else {
+                panic!("Expected Let statement in function body");
+            }
+        } else {
+            panic!("Expected FnDecl");
+        }
+    }
+
+    #[test]
+    fn test_span_propagation_nested_block() {
+        // Nested blocks: { { 1 } }
+        let source = "fn main() -> Unit { let x = { { 1 } }; return }";
+        let tokens: Vec<_> = Lexer::new(source).collect();
+        let program = OnceParser::parse(tokens).unwrap();
+        assert_eq!(program.items.len(), 1);
+        if let Item::FnDecl(fn_decl) = &program.items[0] {
+            assert!(fn_decl.body.span.is_some());
+            if let Some(Stmt::Let(let_decl)) = fn_decl.body.statements.get(0) {
+                if let Expr::Block(outer_block) = &let_decl.value {
+                    assert!(outer_block.span.is_some());
+                    if let Some(stmt) = outer_block.statements.get(0) {
+                        if let Stmt::Expr(Expr::Block(inner_block)) = stmt {
+                            assert!(inner_block.span.is_some());
+                        }
+                    }
+                }
+            }
+        } else {
+            panic!("Expected FnDecl");
+        }
+    }
+
+    #[test]
+    fn test_span_propagation_deep_nested_block() {
+        // Deep nested blocks: 3 levels
+        let source = "fn main() -> Unit { let x = { { { 1 } } }; return }";
+        let tokens: Vec<_> = Lexer::new(source).collect();
+        let program = OnceParser::parse(tokens).unwrap();
+        assert_eq!(program.items.len(), 1);
+        if let Item::FnDecl(fn_decl) = &program.items[0] {
+            assert!(fn_decl.body.span.is_some());
+            if let Some(Stmt::Let(let_decl)) = fn_decl.body.statements.get(0) {
+                if let Expr::Block(outer_block) = &let_decl.value {
+                    assert!(outer_block.span.is_some());
+                    if let Some(stmt) = outer_block.statements.get(0) {
+                        if let Stmt::Expr(Expr::Block(mid_block)) = stmt {
+                            assert!(mid_block.span.is_some());
+                            if let Some(inner_stmt) = mid_block.statements.get(0) {
+                                if let Stmt::Expr(Expr::Block(inner_block)) = inner_stmt {
+                                    assert!(inner_block.span.is_some());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            panic!("Expected FnDecl");
         }
     }
 }

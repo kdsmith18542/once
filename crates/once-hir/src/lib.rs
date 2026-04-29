@@ -3,8 +3,10 @@
 //! The HIR is a desugared, name-resolved representation of Once source code.
 //! It serves as the input to type checking and subsequent compiler passes.
 
-use once_parse::{Program, Item, FnDecl, LetDecl, Type, Expr, Stmt, Block, BinaryOp, Literal};
+use once_parse::{Program, Item, FnDecl, LetDecl, Type, Expr, Stmt, Block, BinaryOp, Literal, Span};
+mod import_resolver;
 use indexmap::IndexMap;
+use import_resolver::ImportResolver;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use thiserror::Error;
@@ -39,6 +41,7 @@ pub struct HirFnDecl {
     pub return_type: Option<HirType>,
     pub body: HirBlock,
     pub is_public: bool,
+    pub span: Option<(usize, usize)>,
 }
 
 /// Resolved function parameter
@@ -56,6 +59,7 @@ pub struct HirLetDecl {
     pub type_annotation: Option<HirType>,
     pub value: HirExpr,
     pub is_public: bool,
+    pub span: Option<(usize, usize)>,
 }
 
 /// Resolved types in Once
@@ -69,12 +73,17 @@ pub enum HirType {
     Str,
     Linear(Box<HirType>),
     Affine(Box<HirType>),
+    Array(Box<HirType>, usize),
+    Generic(String, Vec<HirType>),
+    Tuple(Vec<HirType>),
+    Function(Vec<HirType>, Box<HirType>),
 }
 
 /// Resolved block of statements
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HirBlock {
     pub statements: Vec<HirStmt>,
+    pub span: Option<(usize, usize)>,
 }
 
 /// Resolved statements
@@ -83,6 +92,8 @@ pub enum HirStmt {
     Let(HirLetStmt),
     Return(HirReturnStmt),
     Expr(HirExpr),
+    /// Using statement for linear resource management
+    Using(HirUsingStmt),
 }
 
 /// Resolved let statement
@@ -92,12 +103,24 @@ pub struct HirLetStmt {
     pub type_annotation: Option<HirType>,
     pub value: HirExpr,
     pub is_linear: bool,
+    pub span: Option<(usize, usize)>,
+}
+
+/// Resolved using statement
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HirUsingStmt {
+    pub name: String,
+    pub init: HirExpr,
+    pub body: HirBlock,
+    pub is_linear: bool,
+    pub span: Option<(usize, usize)>,
 }
 
 /// Resolved return statement
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HirReturnStmt {
     pub value: Option<HirExpr>,
+    pub span: Option<(usize, usize)>,
 }
 
 /// Resolved expressions
@@ -203,7 +226,10 @@ impl HirBuilder {
         }
 
         if self.errors.is_empty() {
-            Ok(HirProgram { items: hir_items, imports })
+            let mut program_hir = HirProgram { items: hir_items, imports };
+            let resolver = ImportResolver::new();
+            let _ = resolver.resolve(&mut program_hir);
+            Ok(program_hir)
         } else {
             Err(self.errors)
         }
@@ -226,6 +252,7 @@ impl HirBuilder {
             return_type: fn_decl.return_type.map(|t| self.resolve_type(t)),
             body,
             is_public: false, // Will be determined by visibility analysis
+            span: fn_decl.span.map(|s| (s.start, s.end)),
         }
     }
 
@@ -235,29 +262,42 @@ impl HirBuilder {
             type_annotation: let_decl.type_annotation.map(|t| self.resolve_type(t)),
             value: self.resolve_expr(let_decl.value),
             is_public: false, // Will be determined by visibility analysis
+            span: let_decl.span.map(|s| (s.start, s.end)),
         }
     }
 
     fn resolve_block(&mut self, block: Block) -> HirBlock {
+        let span = block.span.map(|s| (s.start, s.end));
         HirBlock {
             statements: block.statements.into_iter()
                 .map(|stmt| self.resolve_stmt(stmt))
                 .collect(),
+            span,
         }
     }
 
-    fn resolve_stmt(&mut self, stmt: Stmt) -> HirStmt {
+fn resolve_stmt(&mut self, stmt: Stmt) -> HirStmt {
         match stmt {
             Stmt::Let(let_stmt) => HirStmt::Let(HirLetStmt {
                 name: let_stmt.name,
                 type_annotation: let_stmt.type_annotation.map(|t| self.resolve_type(t)),
                 value: self.resolve_expr(let_stmt.value),
                 is_linear: false, // Will be determined during type checking
+                span: let_stmt.span
+                    .map(|s| (s.start, s.end)),
             }),
             Stmt::Return(return_stmt) => HirStmt::Return(HirReturnStmt {
                 value: return_stmt.value.map(|e| self.resolve_expr(e)),
+                span: return_stmt.span.map(|s| (s.start, s.end)),
             }),
             Stmt::Expr(expr) => HirStmt::Expr(self.resolve_expr(expr)),
+            Stmt::Using(using_stmt) => HirStmt::Using(HirUsingStmt {
+                name: using_stmt.name,
+                init: self.resolve_expr(using_stmt.init),
+                body: self.resolve_block(using_stmt.body),
+                is_linear: true, // Using statements always involve linear resources
+                span: using_stmt.span.map(|s| (s.start, s.end)),
+            }),
         }
     }
 
@@ -286,6 +326,15 @@ impl HirBuilder {
             Type::Bool => HirType::Bool,
             Type::Float => HirType::Float,
             Type::Str => HirType::Str,
+            Type::Linear(t) => HirType::Linear(Box::new(self.resolve_type(*t))),
+            Type::Affine(t) => HirType::Affine(Box::new(self.resolve_type(*t))),
+            Type::Array(t, n) => HirType::Array(Box::new(self.resolve_type(*t)), n),
+            Type::Generic(name, args) => HirType::Generic(name, args.into_iter().map(|t| self.resolve_type(t)).collect()),
+            Type::Tuple(types) => HirType::Tuple(types.into_iter().map(|t| self.resolve_type(t)).collect()),
+            Type::Function(args, ret) => HirType::Function(
+                args.into_iter().map(|t| self.resolve_type(t)).collect(),
+                Box::new(self.resolve_type(*ret)),
+            ),
         }
     }
 
@@ -321,11 +370,13 @@ impl HirBuilder {
 mod tests {
     use super::*;
     use once_parse::{OnceParser, Program};
+    // use the Hir ImportResolver in tests as a basic exec-path check
     // use once_lex::Lexer;
 
     #[test]
     fn test_hir_construction() {
         let source = "fn main() -> Unit { return }";
+        // let tokens: Vec<_> = Lexer::new(source).collect();
         // let tokens: Vec<_> = Lexer::new(source).collect();
         // let program = OnceParser::parse(tokens).unwrap();
         
@@ -341,4 +392,48 @@ mod tests {
         //     panic!("Expected function declaration");
         // }
     }
+
+    #[test]
+    fn test_import_resolver_noop() {
+        // Minimal sanity check that ImportResolver can be invoked without error
+        let mut prog = HirProgram { items: Vec::new(), imports: Vec::new() };
+        let resolver = ImportResolver::new();
+        assert!(resolver.resolve(&mut prog).is_ok());
+    }
+
+    #[test]
+    fn test_import_resolver_basic() {
+        use crate::Import;
+        // Minimal scenario: a single import path with no items should be expanded to a placeholder
+        let mut prog = HirProgram { items: Vec::new(), imports: vec![Import { path: "std".to_string(), alias: None, items: Vec::new() }] };
+        let resolver = ImportResolver::new();
+        assert!(resolver.resolve(&mut prog).is_ok());
+        assert_eq!(prog.imports[0].items, vec!["*".to_string(), "prelude".to_string()]);
+    }
+
+    #[test]
+    fn test_import_resolver_relative() {
+        use crate::Import;
+        let mut prog = HirProgram { items: Vec::new(), imports: vec![Import { path: "./utils".to_string(), alias: Some("U".to_string()), items: Vec::new() }] };
+        let resolver = ImportResolver::new();
+        assert!(resolver.resolve(&mut prog).is_ok());
+        let imp = &prog.imports[0];
+        // Relative paths are normalized to remove leading './'
+        assert_eq!(imp.path, "utils");
+        assert_eq!(imp.alias.as_ref().unwrap(), "U");
+        assert_eq!(imp.items, vec!["*".to_string()]);
+    }
+}
+
+#[test]
+fn test_import_resolver_named_imports() {
+    use crate::Import;
+    // Named imports should be preserved by the resolver
+    let mut prog = HirProgram {
+        items: Vec::new(),
+        imports: vec![Import { path: "pkg::utils".to_string(), alias: None, items: vec!["Foo".to_string(), "Bar".to_string()] }],
+    };
+    let resolver = ImportResolver::new();
+    assert!(resolver.resolve(&mut prog).is_ok());
+    assert_eq!(prog.imports[0].items, vec!["Foo".to_string(), "Bar".to_string()]);
 }

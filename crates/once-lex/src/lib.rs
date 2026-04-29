@@ -39,6 +39,10 @@ pub enum Token {
     Return,
     #[token("using")]
     Using,
+    #[token("lin")]
+    Lin,
+    #[token("aff")]
+    Aff,
     #[token("spawn")]
     Spawn,
     #[token("async")]
