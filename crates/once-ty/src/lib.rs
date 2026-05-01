@@ -708,6 +708,7 @@ impl TypeChecker {
             HirItem::FnDecl(fn_decl) => self.check_fn_decl(fn_decl),
             HirItem::LetDecl(let_decl) => self.check_let_decl(let_decl),
             HirItem::TypeDecl(_) => Ok(()), // Type declarations are checked separately
+            HirItem::StructDecl(_) => Ok(()), // Struct declarations are checked separately
             HirItem::TraitDecl(trait_decl) => self.check_trait_decl(trait_decl),
             HirItem::ImplBlock(impl_block) => self.check_impl_block(impl_block),
         }
@@ -1062,6 +1063,18 @@ impl TypeChecker {
                 // For now, just check the inner expression and return its type
                 // In a full implementation, this would unwrap Result types
                 self.check_expr_with_env(inner, env)
+            }
+            HirExpr::Struct { name: _, fields } => {
+                // Each field's expression is checked; the struct type determined from declarations
+                for (_, val) in fields {
+                    self.check_expr_with_env(val, env)?;
+                }
+                // Return a placeholder struct type
+                Ok(Type::UserDefined { name: "struct".to_string(), args: vec![] })
+            }
+            HirExpr::FieldAccess { base, field: _ } => {
+                // Check the base expression and return the field type
+                self.check_expr_with_env(base, env)
             }
         }
     }

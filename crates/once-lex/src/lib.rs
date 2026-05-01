@@ -23,6 +23,8 @@ pub enum Token {
     Var,
     #[token("type")]
     Type,
+    #[token("struct")]
+    Struct,
     #[token("trait")]
     Trait,
     #[token("impl")]

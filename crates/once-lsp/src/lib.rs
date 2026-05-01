@@ -210,7 +210,7 @@ impl OnceLsp {
                         },
                     });
                 }
-                once_hir::HirItem::TraitDecl(_) | once_hir::HirItem::ImplBlock(_) => {}
+                once_hir::HirItem::StructDecl(_) | once_hir::HirItem::TraitDecl(_) | once_hir::HirItem::ImplBlock(_) => {}
             }
         }
         None
@@ -261,7 +261,7 @@ impl OnceLsp {
                         },
                     });
                 }
-                once_hir::HirItem::TraitDecl(_) | once_hir::HirItem::ImplBlock(_) => {}
+                once_hir::HirItem::StructDecl(_) | once_hir::HirItem::TraitDecl(_) | once_hir::HirItem::ImplBlock(_) => {}
             }
         }
         
@@ -317,7 +317,7 @@ impl OnceLsp {
                     });
                     break;
                 }
-                once_hir::HirItem::TraitDecl(_) | once_hir::HirItem::ImplBlock(_) => {}
+                once_hir::HirItem::StructDecl(_) | once_hir::HirItem::TraitDecl(_) | once_hir::HirItem::ImplBlock(_) => {}
             }
         }
         
@@ -472,7 +472,7 @@ impl OnceLsp {
                                 ));
                             }
                         }
-                        once_hir::HirItem::TraitDecl(_) | once_hir::HirItem::ImplBlock(_) => {}
+                        once_hir::HirItem::StructDecl(_) | once_hir::HirItem::TraitDecl(_) | once_hir::HirItem::ImplBlock(_) => {}
                     }
                 }
             } else {

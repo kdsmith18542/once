@@ -32,6 +32,7 @@ pub enum HirItem {
     FnDecl(HirFnDecl),
     LetDecl(HirLetDecl),
     TypeDecl(HirTypeDecl),
+    StructDecl(HirStructDecl),
     TraitDecl(HirTraitDecl),
     ImplBlock(HirImplBlock),
 }
@@ -95,6 +96,21 @@ pub struct HirTypeDecl {
 pub struct HirVariant {
     pub name: String,
     pub fields: Vec<HirType>,
+}
+
+/// Resolved struct (product type) declaration
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HirStructDecl {
+    pub name: String,
+    pub fields: Vec<HirStructField>,
+    pub span: Option<(usize, usize)>,
+}
+
+/// Resolved struct field
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HirStructField {
+    pub name: String,
+    pub field_type: HirType,
 }
 
 /// Resolved trait declaration
@@ -205,6 +221,16 @@ pub enum HirExpr {
     },
     /// Try/unwrap operator
     Try(Box<HirExpr>),
+    /// Struct literal: StructName { field: value, ... }
+    Struct {
+        name: String,
+        fields: Vec<(String, HirExpr)>,
+    },
+    /// Field access: expr.field
+    FieldAccess {
+        base: Box<HirExpr>,
+        field: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -307,6 +333,10 @@ impl HirBuilder {
                 Item::TypeDecl(type_decl) => {
                     let hir_type = self.resolve_type_decl(type_decl);
                     hir_items.push(HirItem::TypeDecl(hir_type));
+                }
+                Item::StructDecl(struct_decl) => {
+                    let hir_struct = self.resolve_struct_decl(struct_decl);
+                    hir_items.push(HirItem::StructDecl(hir_struct));
                 }
                 Item::TraitDecl(trait_decl) => {
                     let hir_trait = self.resolve_trait_decl(trait_decl);
@@ -442,6 +472,17 @@ impl HirBuilder {
         }
     }
 
+    fn resolve_struct_decl(&mut self, struct_decl: once_parse::StructDecl) -> HirStructDecl {
+        HirStructDecl {
+            name: struct_decl.name,
+            fields: struct_decl.fields.into_iter().map(|f| HirStructField {
+                name: f.name,
+                field_type: self.resolve_type(f.field_type),
+            }).collect(),
+            span: struct_decl.span.map(|s| (s.start, s.end)),
+        }
+    }
+
     fn resolve_trait_decl(&mut self, trait_decl: once_parse::TraitDecl) -> HirTraitDecl {
         HirTraitDecl {
             name: trait_decl.name,
@@ -534,6 +575,14 @@ fn resolve_stmt(&mut self, stmt: Stmt) -> HirStmt {
                 index: Box::new(self.resolve_expr(*index)),
             },
             Expr::Try(inner) => HirExpr::Try(Box::new(self.resolve_expr(*inner))),
+            Expr::Struct { name, fields } => HirExpr::Struct {
+                name,
+                fields: fields.into_iter().map(|(n, e)| (n, self.resolve_expr(e))).collect(),
+            },
+            Expr::FieldAccess { base, field } => HirExpr::FieldAccess {
+                base: Box::new(self.resolve_expr(*base)),
+                field,
+            },
         }
     }
 

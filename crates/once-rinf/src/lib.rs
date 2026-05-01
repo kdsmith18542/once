@@ -169,6 +169,7 @@ impl RegionSolver {
                     self.generate_block_constraints(&method.body, primary_region)?;
                 }
             }
+            HirItem::StructDecl(_) => {}
         }
         Ok(())
     }
@@ -267,6 +268,14 @@ impl RegionSolver {
             }
             HirExpr::Try(inner) => {
                 self.generate_expr_constraints(inner, region)?;
+            }
+            HirExpr::Struct { fields, .. } => {
+                for (_name, field_expr) in fields {
+                    self.generate_expr_constraints(field_expr, region.clone())?;
+                }
+            }
+            HirExpr::FieldAccess { base, .. } => {
+                self.generate_expr_constraints(base, region)?;
             }
         }
         Ok(())

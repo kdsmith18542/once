@@ -263,6 +263,7 @@ impl MirGenerator {
                         functions.push(self.generate_function(method)?);
                     }
                 }
+                HirItem::StructDecl(_) => {}
             }
         }
 
@@ -855,6 +856,16 @@ impl MirGenerator {
             HirExpr::Try(inner) => {
                 let inner_ops = self.generate_expr(inner, temp_count)?;
                 statements.extend(inner_ops);
+            }
+            HirExpr::Struct { fields, .. } => {
+                for (_name, field_expr) in fields {
+                    let field_ops = self.generate_expr(field_expr, temp_count)?;
+                    statements.extend(field_ops);
+                }
+            }
+            HirExpr::FieldAccess { base, .. } => {
+                let base_ops = self.generate_expr(base, temp_count)?;
+                statements.extend(base_ops);
             }
         }
 

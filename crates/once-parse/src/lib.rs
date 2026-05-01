@@ -36,6 +36,7 @@ pub enum Item {
     FnDecl(FnDecl),
     LetDecl(LetDecl),
     TypeDecl(TypeDecl),
+    StructDecl(StructDecl),
     TraitDecl(TraitDecl),
     ImplBlock(ImplBlock),
     GoalDecl(GoalDecl),
@@ -110,6 +111,22 @@ pub struct TypeDecl {
 pub struct Variant {
     pub name: String,
     pub fields: Vec<Type>,
+}
+
+/// Struct (product type) declaration
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StructDecl {
+    pub name: String,
+    pub fields: Vec<StructField>,
+    pub span: Option<Span>,
+}
+
+/// A field in a struct definition
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StructField {
+    pub name: String,
+    pub field_type: Type,
+    pub span: Option<Span>,
 }
 
 /// Trait declaration
@@ -225,6 +242,16 @@ pub enum Expr {
     },
     /// Try/unwrap operator
     Try(Box<Expr>),
+    /// Struct literal: StructName { field: value, ... }
+    Struct {
+        name: String,
+        fields: Vec<(String, Expr)>,
+    },
+    /// Field access: expr.field
+    FieldAccess {
+        base: Box<Expr>,
+        field: String,
+    },
 }
 
 /// Patterns for match expressions
@@ -307,6 +334,10 @@ impl OnceParser {
                 Token::Type | Token::Enum => {
                     let type_decl = Self::parse_type_decl(&mut tokens)?;
                     items.push(Item::TypeDecl(type_decl));
+                }
+                Token::Struct => {
+                    let struct_decl = Self::parse_struct_decl(&mut tokens)?;
+                    items.push(Item::StructDecl(struct_decl));
                 }
                 Token::Trait => items.push(Item::TraitDecl(Self::parse_trait_decl(&mut tokens)?)),
                 Token::Impl => items.push(Item::ImplBlock(Self::parse_impl_block(&mut tokens)?)),
@@ -708,6 +739,62 @@ impl OnceParser {
             name,
             type_params,
             variants,
+            span: Some(start_span),
+        })
+    }
+
+    fn parse_struct_decl(tokens: &mut std::iter::Peekable<std::vec::IntoIter<TokenWithSpan>>) -> Result<StructDecl, String> {
+        // struct
+        let struct_token = tokens.next().ok_or_else(|| "Expected 'struct' token".to_string())?;
+        let start_span = Span::from(struct_token.span);
+
+        // name
+        let name = match tokens.next() {
+            Some(t) => match t.token {
+                Token::Ident(name) => name,
+                _ => return Err("Expected struct name".to_string()),
+            },
+            None => return Err("Expected struct name".to_string()),
+        };
+
+        // {
+        if !matches!(tokens.next().map(|t| t.token), Some(Token::LBrace)) {
+            return Err("Expected '{' after struct name".to_string());
+        }
+
+        // fields
+        let mut fields = Vec::new();
+        while let Some(t) = tokens.peek() {
+            if matches!(t.token, Token::RBrace) {
+                tokens.next();
+                break;
+            }
+            let field_name = match tokens.next() {
+                Some(t) => match t.token {
+                    Token::Ident(name) => name,
+                    _ => return Err("Expected field name".to_string()),
+                },
+                None => return Err("Expected field name".to_string()),
+            };
+            if !matches!(tokens.next().map(|t| t.token), Some(Token::Colon)) {
+                return Err("Expected ':' after field name".to_string());
+            }
+            let field_type = Self::parse_type(tokens)?;
+            if let Some(t) = tokens.peek() {
+                if matches!(t.token, Token::Comma) {
+                    tokens.next();
+                }
+            }
+            fields.push(StructField {
+                name: field_name,
+                field_type,
+                span: None,
+            });
+        }
+
+        Ok(StructDecl {
+            name,
+            fields,
             span: Some(start_span),
         })
     }
@@ -1349,6 +1436,53 @@ Ok(ReturnStmt { value, span: Some(start_span) })
                         }
                         expr = Expr::Index { base: Box::new(expr), index: Box::new(index) };
                         continue;
+                    }
+                    Token::Dot => {
+                        // Field access: expr.field
+                        tokens.next(); // consume .
+                        let field = match tokens.next() {
+                            Some(t) => match t.token {
+                                Token::Ident(name) => name,
+                                _ => return Err("Expected field name after '.'".to_string()),
+                            },
+                            None => return Err("Expected field name after '.'".to_string()),
+                        };
+                        expr = Expr::FieldAccess { base: Box::new(expr), field };
+                        continue;
+                    }
+                    Token::LBrace => {
+                        // Struct literal: after parsing an Ident, { field: val, ... } is a struct constructor
+                        if let Expr::Ident(name) = &expr {
+                            let name = name.clone();
+                            tokens.next(); // consume {
+                            let mut fields = Vec::new();
+                            while let Some(t) = tokens.peek() {
+                                if matches!(t.token, Token::RBrace) {
+                                    tokens.next();
+                                    break;
+                                }
+                                let field_name = match tokens.next() {
+                                    Some(t) => match t.token {
+                                        Token::Ident(name) => name,
+                                        _ => return Err("Expected field name".to_string()),
+                                    },
+                                    None => return Err("Expected field name".to_string()),
+                                };
+                                if !matches!(tokens.next().map(|t| t.token), Some(Token::Colon)) {
+                                    return Err("Expected ':' after field name".to_string());
+                                }
+                                let value = Self::parse_expr(tokens)?;
+                                fields.push((field_name, value));
+                                if let Some(t) = tokens.peek() {
+                                    if matches!(t.token, Token::Comma) {
+                                        tokens.next();
+                                    }
+                                }
+                            }
+                            expr = Expr::Struct { name, fields };
+                            continue;
+                        }
+                        break;
                     }
                     _ => break,
                 }

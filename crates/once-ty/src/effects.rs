@@ -223,6 +223,7 @@ impl EffectChecker {
             HirItem::FnDecl(fn_decl) => self.check_fn_decl(fn_decl),
             HirItem::LetDecl(let_decl) => self.check_let_decl(let_decl),
             HirItem::TypeDecl(_) => Ok(()),
+            HirItem::StructDecl(_) => Ok(()),
             HirItem::TraitDecl(trait_decl) => {
                 for method in &trait_decl.methods {
                     self.check_fn_decl(method)?;
@@ -413,6 +414,17 @@ impl EffectChecker {
             }
             HirExpr::Try(inner) => {
                 self.check_expr(inner)
+            }
+            HirExpr::Struct { name: _, fields } => {
+                let mut effects = EffectRow::Empty;
+                for (_, val) in fields {
+                    let val_effects = self.check_expr(val)?;
+                    effects = self.union_effect_rows(effects, val_effects);
+                }
+                Ok(effects)
+            }
+            HirExpr::FieldAccess { base, field: _ } => {
+                self.check_expr(base)
             }
         }
     }

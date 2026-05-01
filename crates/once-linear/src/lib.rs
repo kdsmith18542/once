@@ -277,6 +277,7 @@ impl LinearityChecker {
             HirItem::FnDecl(fn_decl) => self.check_fn_decl(fn_decl),
             HirItem::LetDecl(let_decl) => self.check_let_decl(let_decl),
             HirItem::TypeDecl(_) => Ok(()),
+            HirItem::StructDecl(_) => Ok(()),
             HirItem::TraitDecl(_) => Ok(()),
             HirItem::ImplBlock(_) => Ok(()),
         }
@@ -555,6 +556,15 @@ impl LinearityChecker {
             }
             HirExpr::Try(inner) => {
                 self.check_expr_with_env(inner, env)
+            }
+            HirExpr::Struct { name: _, fields } => {
+                for (_, val) in fields {
+                    self.check_expr_with_env(val, env)?;
+                }
+                Ok(())
+            }
+            HirExpr::FieldAccess { base, field: _ } => {
+                self.check_expr_with_env(base, env)
             }
         }
     }
