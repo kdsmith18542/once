@@ -4,6 +4,7 @@
 
 use once_mir::{MirProgram, MirFunction, MirStmt, MirOp, MirLocation, MirValue};
 use once_hir::HirType;
+use once_rinf::Region;
 use thiserror::Error;
 use std::collections::{HashMap, HashSet};
 use cranelift_codegen::ir::{self, types, AbiParam, Signature, Value};
@@ -213,6 +214,9 @@ impl RealCraneliftCodegen {
         let mut declared_vars: Vec<Variable> = Vec::new();
         let mut next_var_idx = 0u32;
 
+        // Track allocations per region for FreeRegion support
+        let mut region_allocations: HashMap<Region, Vec<Variable>> = HashMap::new();
+
         let param_values: Vec<Value> = builder.block_params(entry_block).to_vec();
         for (i, (_, _)) in mir_fn.params.iter().enumerate() {
             let value = param_values[i];
@@ -280,7 +284,7 @@ impl RealCraneliftCodegen {
                     current_terminated = true;
                 }
                 _ => {
-                    self.translate_non_terminator(&mut builder, stmt, &mut var_map, &mut declared_vars, &mut next_var_idx)
+                    self.translate_non_terminator(&mut builder, stmt, &mut var_map, &mut declared_vars, &mut next_var_idx, &mut region_allocations)
                         .map_err(|e| RealCodegenError::FunctionCompilationFailed(e.to_string()))?;
                 }
             }
@@ -354,6 +358,7 @@ impl RealCraneliftCodegen {
         var_map: &mut HashMap<MirLocation, Variable>,
         declared_vars: &mut Vec<Variable>,
         next_var_idx: &mut u32,
+        region_allocations: &mut HashMap<Region, Vec<Variable>>,
     ) -> Result<(), RealCodegenError> {
         let get_or_create_var = |var_map: &mut HashMap<MirLocation, Variable>, next_var_idx: &mut u32, loc: &MirLocation| -> Variable {
             *var_map.entry(loc.clone()).or_insert_with(|| {
@@ -412,36 +417,22 @@ impl RealCraneliftCodegen {
                 Ok(())
             }
             MirOp::FreeRegion { region } => {
-                // Region-based deallocation: free all allocations in the region
-                // Look up the region in the RegionDag (mir_fn.region_info or global context)
-                // For now, assume mir_fn.region_info is Some(region) and RegionDag is accessible
-                // (In a full implementation, RegionDag should be passed in or accessible from context)
-
-                // TODO: Replace this with actual RegionDag access from context if needed
-                // For now, try to access via mir_fn.region_info or skip if not available
-                // (This is a simplified implementation for the prototype)
-
-                // NOTE: This code assumes that the region allocations are tracked and
-                // that the variable names for allocations are available in var_map.
-                // In a real implementation, you may need to pass RegionDag to codegen context.
-
-                // Example: For each allocation in the region, emit a call to free
-                // (Here, we use region.allocations as a Vec<String> of variable names)
-
-                // Pseudocode:
-                // for alloc_var_name in region.allocations {
-                //     let alloc_var = var_map.get(&MirLocation::Local(alloc_var_name)) ...
-                //     let ptr = builder.use_var(alloc_var);
-                //     ... emit free(ptr) ...
-                // }
-
-                // Since we don't have direct access to RegionDag here, this is a placeholder.
-                // Insert your region allocation tracking logic here.
-
-                // Placeholder: No-op, but ready for integration
+                // Iterate over all allocations in this region and free them
+                if let Some(allocations) = region_allocations.get(region) {
+                    let free_id = self.func_map.get("free").ok_or_else(|| {
+                        RealCodegenError::UnsupportedOp("free not declared".to_string())
+                    })?;
+                    let module = self.module.as_mut().ok_or_else(||
+                        RealCodegenError::ModuleError("Module not available".to_string()))?;
+                    for alloc_var in allocations.clone() {
+                        let ptr = builder.use_var(alloc_var);
+                        let func_ref = module.declare_func_in_func(*free_id, &mut builder.func);
+                        builder.ins().call(func_ref, &[ptr]);
+                    }
+                }
                 Ok(())
             }
-            MirOp::Allocate { region: _, size, dest } => {
+            MirOp::Allocate { region, size, dest } => {
                 let size_val = builder.ins().iconst(types::I64, *size as i64);
                 let malloc_id = self.func_map.get("malloc").ok_or_else(|| {
                     RealCodegenError::UnsupportedOp("malloc not declared".to_string())
@@ -454,6 +445,8 @@ impl RealCraneliftCodegen {
                 let var = get_or_create_var(var_map, next_var_idx, dest);
                 declare_var(builder, declared_vars, var);
                 builder.def_var(var, ptr);
+                // Track allocation in region for FreeRegion
+                region_allocations.entry(region.clone()).or_default().push(var);
                 Ok(())
             }
             MirOp::BoundsCheck { index, bound, proven } => {
@@ -607,7 +600,33 @@ impl RealCraneliftCodegen {
                     once_mir::MirBinOp::Sub => builder.ins().isub(lhs, rhs),
                     once_mir::MirBinOp::Mul => builder.ins().imul(lhs, rhs),
                     once_mir::MirBinOp::Div => builder.ins().udiv(lhs, rhs),
-                    _ => lhs, // TODO: implement all operations properly
+                    once_mir::MirBinOp::Eq => {
+                        let cmp = builder.ins().icmp(ir::condcodes::IntCC::Equal, lhs, rhs);
+                        builder.ins().uextend(types::I64, cmp)
+                    }
+                    once_mir::MirBinOp::Ne => {
+                        let cmp = builder.ins().icmp(ir::condcodes::IntCC::NotEqual, lhs, rhs);
+                        builder.ins().uextend(types::I64, cmp)
+                    }
+                    once_mir::MirBinOp::Lt => {
+                        let cmp = builder.ins().icmp(ir::condcodes::IntCC::SignedLessThan, lhs, rhs);
+                        builder.ins().uextend(types::I64, cmp)
+                    }
+                    once_mir::MirBinOp::Le => {
+                        let cmp = builder.ins().icmp(ir::condcodes::IntCC::SignedLessThanOrEqual, lhs, rhs);
+                        builder.ins().uextend(types::I64, cmp)
+                    }
+                    once_mir::MirBinOp::Gt => {
+                        let cmp = builder.ins().icmp(ir::condcodes::IntCC::SignedGreaterThan, lhs, rhs);
+                        builder.ins().uextend(types::I64, cmp)
+                    }
+                    once_mir::MirBinOp::Ge => {
+                        let cmp = builder.ins().icmp(ir::condcodes::IntCC::SignedGreaterThanOrEqual, lhs, rhs);
+                        builder.ins().uextend(types::I64, cmp)
+                    }
+                    once_mir::MirBinOp::And => builder.ins().band(lhs, rhs),
+                    once_mir::MirBinOp::Or => builder.ins().bor(lhs, rhs),
+                    once_mir::MirBinOp::Move => lhs,
                 };
                 let dest_var = get_or_create_var(var_map, next_var_idx, dest);
                 declare_var(builder, declared_vars, dest_var);
