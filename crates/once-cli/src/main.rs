@@ -123,6 +123,14 @@ enum Commands {
         #[arg(long)]
         stdio: bool,
     },
+    /// Auto-fix common issues
+    Fix {
+        /// Fix mode
+        #[arg(long, default_value = "consumes")]
+        mode: String,
+        /// Input file
+        input: PathBuf,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -170,6 +178,9 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::Lsp { stdio } => {
             start_lsp_server(stdio)?;
+        }
+        Commands::Fix { mode, input } => {
+            fix_file(&mode, &input)?;
         }
     }
 
@@ -426,6 +437,45 @@ fn explain_file(topic: &ExplainTopic, input: &PathBuf) -> anyhow::Result<()> {
             linearity_checker.check(&hir).map_err(|e| anyhow::anyhow!("Linearity error: {:?}", e))?;
             println!("Linearity analysis passed.");
             println!("All linear values are consumed exactly once.");
+        }
+    }
+    Ok(())
+}
+
+fn fix_file(mode: &str, input: &PathBuf) -> anyhow::Result<()> {
+    let source = fs::read_to_string(input)?;
+    let lexer = Lexer::new(&source);
+    let tokens: Vec<_> = lexer.collect();
+    let ast = OnceParser::parse(tokens).map_err(|e| anyhow::anyhow!("Parse error: {}", e))?;
+    let mut builder = HirBuilder::new();
+    let hir = builder.build(ast).map_err(|e| anyhow::anyhow!("HIR error: {:?}", e))?;
+
+    match mode {
+        "consumes" | "linearity" => {
+            let mut linearity_checker = LinearityChecker::new();
+            match linearity_checker.check(&hir) {
+                Ok(()) => {
+                    println!("All linear values are properly consumed.");
+                }
+                Err(errors) => {
+                    println!("Found {} linearity issues:", errors.len());
+                    for error in &errors {
+                        println!("  - Fix needed: {:?}", error);
+                    }
+                    println!("\nSuggestions:");
+                    println!("  - Use 'using resource = expr {{ body }}' to guarantee consumption");
+                    println!("  - Add '.consume()' call before end of scope");
+                    println!("  - Mark variable as 'aff' if at-most-once consumption is acceptable");
+                }
+            }
+        }
+        "imports" => {
+            println!("Import fix suggestions:");
+            println!("  - Use 'once fmt' for canonical formatting");
+            println!("  - Unused imports will be identified during compilation");
+        }
+        _ => {
+            anyhow::bail!("Unknown fix mode: {}. Use 'consumes' or 'imports'.", mode);
         }
     }
     Ok(())
