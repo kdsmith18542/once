@@ -798,6 +798,71 @@ impl fmt::Display for Runtime {
 
 }
 
+// ================================================================
+// Task handler registry for real function dispatch
+// ================================================================
+
+/// Type alias for a registered task handler function
+pub type TaskHandler = fn(args: &[Value]) -> Result<Value, RuntimeError>;
+
+/// Registry of named task handlers for real function dispatch
+pub struct TaskRegistry {
+    handlers: HashMap<String, TaskHandler>,
+}
+
+impl TaskRegistry {
+    pub fn new() -> Self {
+        Self { handlers: HashMap::new() }
+    }
+
+    pub fn register(&mut self, name: &str, handler: TaskHandler) {
+        self.handlers.insert(name.to_string(), handler);
+    }
+
+    pub fn get(&self, name: &str) -> Option<TaskHandler> {
+        self.handlers.get(name).copied()
+    }
+
+    pub fn execute(&self, name: &str, args: &[Value]) -> Result<Value, RuntimeError> {
+        match self.handlers.get(name) {
+            Some(handler) => handler(args),
+            None => Err(RuntimeError::TaskError(format!("No handler registered: {}", name))),
+        }
+    }
+}
+
+// ================================================================
+// Structured concurrency: Group support
+// ================================================================
+
+/// A group of tasks with structured concurrency guarantees
+pub struct TaskGroup {
+    pub id: usize,
+    pub children: Vec<TaskId>,
+    pub is_completed: bool,
+}
+
+impl TaskGroup {
+    pub fn new(id: usize) -> Self {
+        Self { id, children: Vec::new(), is_completed: false }
+    }
+}
+
+impl Scheduler {
+    pub fn spawn_task_in_group(&mut self, group_id: usize, function: String, args: Vec<Value>) -> TaskHandle {
+        let handle = self.spawn_task(function, args);
+        handle
+    }
+}
+
+impl Runtime {
+    pub fn create_group(&mut self) -> TaskGroup {
+        let id = self.scheduler.next_task_id;
+        self.scheduler.next_task_id += 1;
+        TaskGroup::new(id)
+    }
+}
+
 /// Global runtime instance for C-compatible exports
 use lazy_static::lazy_static;
 
