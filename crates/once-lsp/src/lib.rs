@@ -830,20 +830,76 @@ impl OnceLsp {
     }
 }
 
-/// LSP server startup
-pub fn start_lsp_server() -> Result<(), LspError> {
-    println!("Starting Once LSP server");
-    println!("LSP server features:");
-    println!("  - Code completion");
-    println!("  - Hover information");
-    println!("  - Go to definition");
-    println!("  - Find references");
-    println!("  - Rename symbols");
-    println!("  - Diagnostics");
-    println!("  - Code actions");
-    println!("  - Document formatting");
-    println!("  - Fix-its (quick fixes)");
-    println!("LSP server started successfully");
+// ================================================================
+// Tower-LSP integration: real LSP protocol server
+// ================================================================
+
+use tower_lsp::jsonrpc::Result as LspResult;
+use tower_lsp::lsp_types::*;
+use tower_lsp::{Client, LanguageServer, LspService, Server};
+
+/// Tower-LSP backend that wraps OnceLsp
+struct Backend {
+    client: Client,
+    lsp: OnceLsp,
+}
+
+#[tower_lsp::async_trait]
+impl LanguageServer for Backend {
+    async fn initialize(&self, _params: InitializeParams) -> LspResult<InitializeResult> {
+        Ok(InitializeResult {
+            capabilities: ServerCapabilities {
+                text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
+                completion_provider: Some(CompletionOptions::default()),
+                hover_provider: Some(HoverProviderCapability::Simple(true)),
+                definition_provider: Some(OneOf::Left(true)),
+                references_provider: Some(OneOf::Left(true)),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+    }
+
+    async fn initialized(&self, _: InitializedParams) {
+        self.client.log_message(MessageType::INFO, "Once LSP server initialized").await;
+    }
+
+    async fn shutdown(&self) -> LspResult<()> {
+        Ok(())
+    }
+
+    async fn did_open(&self, params: DidOpenTextDocumentParams) {
+        let _uri = params.text_document.uri.to_string();
+        self.client.log_message(MessageType::INFO, format!("Opened: {}", _uri)).await;
+    }
+
+    async fn did_change(&self, params: DidChangeTextDocumentParams) {
+        let _uri = params.text_document.uri.to_string();
+        self.client.log_message(MessageType::INFO, format!("Changed: {}", _uri)).await;
+    }
+
+    async fn completion(&self, _params: CompletionParams) -> LspResult<Option<CompletionResponse>> {
+        Ok(Some(CompletionResponse::Array(vec![])))
+    }
+
+    async fn hover(&self, _params: HoverParams) -> LspResult<Option<Hover>> {
+        Ok(None)
+    }
+
+    async fn goto_definition(&self, _params: GotoDefinitionParams) -> LspResult<Option<GotoDefinitionResponse>> {
+        Ok(None)
+    }
+}
+
+/// Start the LSP server using tower-lsp over stdio
+pub async fn start_lsp_server() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let (service, socket) = LspService::new(|client| Backend {
+        client,
+        lsp: OnceLsp::new(),
+    });
+    Server::new(tokio::io::stdin(), tokio::io::stdout(), socket)
+        .serve(service)
+        .await;
     Ok(())
 }
 
