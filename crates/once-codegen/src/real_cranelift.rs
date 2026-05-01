@@ -5,7 +5,7 @@
 use once_mir::{MirProgram, MirFunction, MirStmt, MirOp, MirLocation, MirValue};
 use once_hir::HirType;
 use thiserror::Error;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use cranelift_codegen::ir::{self, types, AbiParam, Signature, Value};
 use cranelift_codegen::isa::CallConv;
 use cranelift_codegen::settings;
@@ -14,7 +14,7 @@ use cranelift_codegen::ir::InstBuilder;
 use cranelift_module::{default_libcall_names, Module, Linkage, FuncId};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use cranelift_native::builder as native_builder;
-use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
+use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 
 /// Code generation errors for the real Cranelift backend.
 #[derive(Error, Debug, Clone)]
@@ -105,6 +105,65 @@ impl RealCraneliftCodegen {
                     declared.push((ext_fn.to_string(), func_id));
                 }
             }
+
+            // Declare malloc: size_t -> void*
+            {
+                let mut sig = Signature::new(CallConv::SystemV);
+                sig.params.push(AbiParam::new(types::I64));
+                sig.returns.push(AbiParam::new(types::I64));
+                if let Ok(func_id) = module.declare_function("malloc", Linkage::Import, &sig) {
+                    declared.push(("malloc".to_string(), func_id));
+                }
+            }
+
+            // Declare free: void* -> void
+            {
+                let mut sig = Signature::new(CallConv::SystemV);
+                sig.params.push(AbiParam::new(types::I64));
+                if let Ok(func_id) = module.declare_function("free", Linkage::Import, &sig) {
+                    declared.push(("free".to_string(), func_id));
+                }
+            }
+
+            // Declare runtime concurrency functions (resolved at link time)
+            // once_runtime_spawn(func_ptr: i64, args_ptr: i64) -> task_handle: i64
+            {
+                let mut sig = Signature::new(CallConv::SystemV);
+                sig.params.push(AbiParam::new(types::I64));
+                sig.params.push(AbiParam::new(types::I64));
+                sig.returns.push(AbiParam::new(types::I64));
+                if let Ok(func_id) = module.declare_function("once_runtime_spawn", Linkage::Import, &sig) {
+                    declared.push(("once_runtime_spawn".to_string(), func_id));
+                }
+            }
+            // once_runtime_send(channel_id: i64, value: i64) -> status: i64
+            {
+                let mut sig = Signature::new(CallConv::SystemV);
+                sig.params.push(AbiParam::new(types::I64));
+                sig.params.push(AbiParam::new(types::I64));
+                sig.returns.push(AbiParam::new(types::I64));
+                if let Ok(func_id) = module.declare_function("once_runtime_send", Linkage::Import, &sig) {
+                    declared.push(("once_runtime_send".to_string(), func_id));
+                }
+            }
+            // once_runtime_recv(channel_id: i64) -> value: i64
+            {
+                let mut sig = Signature::new(CallConv::SystemV);
+                sig.params.push(AbiParam::new(types::I64));
+                sig.returns.push(AbiParam::new(types::I64));
+                if let Ok(func_id) = module.declare_function("once_runtime_recv", Linkage::Import, &sig) {
+                    declared.push(("once_runtime_recv".to_string(), func_id));
+                }
+            }
+            // once_runtime_await(task_handle: i64) -> result: i64
+            {
+                let mut sig = Signature::new(CallConv::SystemV);
+                sig.params.push(AbiParam::new(types::I64));
+                sig.returns.push(AbiParam::new(types::I64));
+                if let Ok(func_id) = module.declare_function("once_runtime_await", Linkage::Import, &sig) {
+                    declared.push(("once_runtime_await".to_string(), func_id));
+                }
+            }
         } // module borrow ends
 
         // Populate func_map
@@ -149,24 +208,91 @@ impl RealCraneliftCodegen {
         builder.append_block_params_for_function_params(entry_block);
         builder.switch_to_block(entry_block);
 
-        // Map parameter locations to SSA values
-        let mut loc_map: HashMap<MirLocation, Value> = HashMap::new();
-        let param_values = builder.block_params(entry_block);
+        // Variable tracking: each MirLocation maps to a Cranelift Variable
+        let mut var_map: HashMap<MirLocation, Variable> = HashMap::new();
+        let mut declared_vars: Vec<Variable> = Vec::new();
+        let mut next_var_idx = 0u32;
+
+        let param_values: Vec<Value> = builder.block_params(entry_block).to_vec();
         for (i, (_, _)) in mir_fn.params.iter().enumerate() {
             let value = param_values[i];
-            loc_map.insert(MirLocation::Param(i), value);
+            let loc = MirLocation::Param(i);
+            let var = *var_map.entry(loc).or_insert_with(|| {
+                let v = Variable::from_u32(next_var_idx);
+                next_var_idx += 1;
+                v
+            });
+            if !declared_vars.contains(&var) {
+                builder.declare_var(var, types::I64);
+                declared_vars.push(var);
+            }
+            builder.def_var(var, value);
         }
 
-        // Translate MIR statements into Cranelift IR
+        // Pre-create Cranelift blocks for all MIR labels
+        let mut label_blocks: HashMap<usize, ir::Block> = HashMap::new();
         for stmt in &mir_fn.body.statements {
-            self.translate_statement(&mut builder, stmt, &mut loc_map)
-                .map_err(|e| RealCodegenError::FunctionCompilationFailed(e.to_string()))?;
+            if let MirOp::Label { id } = &stmt.op {
+                let block = builder.create_block();
+                label_blocks.insert(*id, block);
+            }
         }
 
-         // Seal the entry block and all other blocks (all jump targets are now known)
-        builder.seal_all_blocks();
+        let mut current_terminated = false;
 
-        // Finalize the function
+        for stmt in &mir_fn.body.statements {
+            match &stmt.op {
+                MirOp::Label { id } => {
+                    let new_block = *label_blocks.get(id).ok_or_else(|| 
+                        RealCodegenError::UnsupportedOp(format!("Unknown label: {}", id)))?;
+                    if !current_terminated {
+                        builder.ins().jump(new_block, &[]);
+                    }
+                    builder.switch_to_block(new_block);
+                    current_terminated = false;
+                }
+                MirOp::Jump { target } => {
+                    let target_block = *label_blocks.get(target).ok_or_else(|| 
+                        RealCodegenError::UnsupportedOp(format!("Unknown jump target: {}", target)))?;
+                    builder.ins().jump(target_block, &[]);
+                    current_terminated = true;
+                }
+                MirOp::Branch { condition, true_target, false_target } => {
+                    let cond_var = *var_map.get(condition).ok_or_else(|| 
+                        RealCodegenError::UnsupportedOp(format!("Branch condition variable not found: {:?}", condition)))?;
+                    let cond_val = builder.use_var(cond_var);
+                    let true_block = *label_blocks.get(true_target).ok_or_else(|| 
+                        RealCodegenError::UnsupportedOp(format!("Unknown branch target: {}", true_target)))?;
+                    let false_block = *label_blocks.get(false_target).ok_or_else(|| 
+                        RealCodegenError::UnsupportedOp(format!("Unknown branch target: {}", false_target)))?;
+                    builder.ins().brif(cond_val, true_block, &[], false_block, &[]);
+                    current_terminated = true;
+                }
+                MirOp::Return { value } => {
+                    if let Some(loc) = value {
+                        let var = *var_map.get(loc).ok_or_else(|| 
+                            RealCodegenError::UnsupportedOp(format!("Return variable not found: {:?}", loc)))?;
+                        let val = builder.use_var(var);
+                        builder.ins().return_(&[val]);
+                    } else {
+                        builder.ins().return_(&[]);
+                    }
+                    current_terminated = true;
+                }
+                _ => {
+                    self.translate_non_terminator(&mut builder, stmt, &mut var_map, &mut declared_vars, &mut next_var_idx)
+                        .map_err(|e| RealCodegenError::FunctionCompilationFailed(e.to_string()))?;
+                }
+            }
+        }
+
+        // Ensure the last block is terminated
+        if !current_terminated {
+            builder.ins().return_(&[]);
+        }
+
+        // Seal all blocks and finalize
+        builder.seal_all_blocks();
         builder.finalize();
 
         // Define the function in the module (borrow module after translation)
@@ -205,7 +331,7 @@ impl RealCraneliftCodegen {
             HirType::Int => types::I64,
             HirType::Float => types::F64,
             // Booleans represented as i8 (1 byte)
-            HirType::Bool => types::I8,
+            HirType::Bool => types::I64,
             // Strings and complex types are represented as pointers (i64)
             HirType::Str => types::I64,
             HirType::Unit => types::I64, // placeholder; used only as param maybe
@@ -218,55 +344,225 @@ impl RealCraneliftCodegen {
         }
     }
 
-    /// Translate a single MIR statement to Cranelift IR.
-    fn translate_statement(
+    /// Translate a non-terminator MIR statement to Cranelift IR.
+    /// Terminators (Return, Jump, Branch) and block headers (Label) are handled
+    /// by define_function to manage Cranelift block switching correctly.
+    fn translate_non_terminator(
         &mut self,
         builder: &mut FunctionBuilder,
         stmt: &MirStmt,
-        loc_map: &mut HashMap<MirLocation, Value>,
+        var_map: &mut HashMap<MirLocation, Variable>,
+        declared_vars: &mut Vec<Variable>,
+        next_var_idx: &mut u32,
     ) -> Result<(), RealCodegenError> {
+        let get_or_create_var = |var_map: &mut HashMap<MirLocation, Variable>, next_var_idx: &mut u32, loc: &MirLocation| -> Variable {
+            *var_map.entry(loc.clone()).or_insert_with(|| {
+                let v = Variable::from_u32(*next_var_idx);
+                *next_var_idx += 1;
+                v
+            })
+        };
+
+        let declare_var = |builder: &mut FunctionBuilder, declared_vars: &mut Vec<Variable>, var: Variable| {
+            if !declared_vars.contains(&var) {
+                builder.declare_var(var, types::I64);
+                declared_vars.push(var);
+            }
+        };
+
         match &stmt.op {
             MirOp::LoadLiteral { value, dest } => {
                 let clif_val = match value {
                     MirValue::Int(n) => builder.ins().iconst(types::I64, *n),
                     MirValue::Float(f) => builder.ins().f64const(*f),
-                    MirValue::Bool(b) => builder.ins().iconst(types::I8, if *b { 1 } else { 0 }),
+                    MirValue::Bool(b) => builder.ins().iconst(types::I64, if *b { 1 } else { 0 }),
                     MirValue::String(_s) => {
                         // TODO: embed string in data section and load pointer
                         builder.ins().iconst(types::I64, 0)
                     }
                     MirValue::Unit => builder.ins().iconst(types::I64, 0),
                 };
-                loc_map.insert(dest.clone(), clif_val);
+                let var = get_or_create_var(var_map, next_var_idx, dest);
+                declare_var(builder, declared_vars, var);
+                builder.def_var(var, clif_val);
                 Ok(())
             }
             MirOp::Move { from, to } => {
-                let val = loc_map.get(from).cloned().ok_or_else(|| {
-                    RealCodegenError::UnsupportedOp(format!("Move from uninitialized location: {:?}", from))
+                let from_var = *var_map.get(from).ok_or_else(|| {
+                    RealCodegenError::UnsupportedOp(format!("Move from uninitialized variable: {:?}", from))
                 })?;
-                loc_map.insert(to.clone(), val);
+                let val = builder.use_var(from_var);
+                let to_var = get_or_create_var(var_map, next_var_idx, to);
+                declare_var(builder, declared_vars, to_var);
+                builder.def_var(to_var, val);
                 Ok(())
             }
-            MirOp::Return { value } => {
-                if let Some(loc) = value {
-                    let val = loc_map.get(loc).cloned().ok_or_else(|| {
-                        RealCodegenError::UnsupportedOp(format!("Return from uninitialized location: {:?}", loc))
-                    })?;
-                    builder.ins().return_(&[val]);
-                } else {
-                    builder.ins().return_(&[]);
+            MirOp::Drop { location } => {
+                let loc_var = *var_map.get(location).ok_or_else(|| {
+                    RealCodegenError::UnsupportedOp(format!("Drop of uninitialized variable: {:?}", location))
+                })?;
+                let ptr = builder.use_var(loc_var);
+                let free_id = self.func_map.get("free").ok_or_else(|| {
+                    RealCodegenError::UnsupportedOp("free not declared".to_string())
+                })?;
+                let module = self.module.as_mut().ok_or_else(||
+                    RealCodegenError::ModuleError("Module not available".to_string()))?;
+                let func_ref = module.declare_func_in_func(*free_id, &mut builder.func);
+                builder.ins().call(func_ref, &[ptr]);
+                Ok(())
+            }
+            MirOp::FreeRegion { region } => {
+                // Region-based deallocation: free all allocations in the region
+                // Look up the region in the RegionDag (mir_fn.region_info or global context)
+                // For now, assume mir_fn.region_info is Some(region) and RegionDag is accessible
+                // (In a full implementation, RegionDag should be passed in or accessible from context)
+
+                // TODO: Replace this with actual RegionDag access from context if needed
+                // For now, try to access via mir_fn.region_info or skip if not available
+                // (This is a simplified implementation for the prototype)
+
+                // NOTE: This code assumes that the region allocations are tracked and
+                // that the variable names for allocations are available in var_map.
+                // In a real implementation, you may need to pass RegionDag to codegen context.
+
+                // Example: For each allocation in the region, emit a call to free
+                // (Here, we use region.allocations as a Vec<String> of variable names)
+
+                // Pseudocode:
+                // for alloc_var_name in region.allocations {
+                //     let alloc_var = var_map.get(&MirLocation::Local(alloc_var_name)) ...
+                //     let ptr = builder.use_var(alloc_var);
+                //     ... emit free(ptr) ...
+                // }
+
+                // Since we don't have direct access to RegionDag here, this is a placeholder.
+                // Insert your region allocation tracking logic here.
+
+                // Placeholder: No-op, but ready for integration
+                Ok(())
+            }
+            MirOp::Allocate { region: _, size, dest } => {
+                let size_val = builder.ins().iconst(types::I64, *size as i64);
+                let malloc_id = self.func_map.get("malloc").ok_or_else(|| {
+                    RealCodegenError::UnsupportedOp("malloc not declared".to_string())
+                })?;
+                let module = self.module.as_mut().ok_or_else(||
+                    RealCodegenError::ModuleError("Module not available".to_string()))?;
+                let func_ref = module.declare_func_in_func(*malloc_id, &mut builder.func);
+                let call_inst = builder.ins().call(func_ref, &[size_val]);
+                let ptr = builder.func.dfg.first_result(call_inst);
+                let var = get_or_create_var(var_map, next_var_idx, dest);
+                declare_var(builder, declared_vars, var);
+                builder.def_var(var, ptr);
+                Ok(())
+            }
+            MirOp::BoundsCheck { index, bound, proven } => {
+                if *proven {
+                    return Ok(());
                 }
+                let index_var = *var_map.get(index).ok_or_else(|| {
+                    RealCodegenError::UnsupportedOp(format!("BoundsCheck index variable not found: {:?}", index))
+                })?;
+                let index_val = builder.use_var(index_var);
+                let bound_var = *var_map.get(bound).ok_or_else(|| {
+                    RealCodegenError::UnsupportedOp(format!("BoundsCheck bound variable not found: {:?}", bound))
+                })?;
+                let bound_val = builder.use_var(bound_var);
+
+                let continue_block = builder.create_block();
+                let trap_block = builder.create_block();
+
+                let cmp = builder.ins().icmp(ir::condcodes::IntCC::UnsignedLessThan, index_val, bound_val);
+                builder.ins().brif(cmp, continue_block, &[], trap_block, &[]);
+
+                builder.switch_to_block(trap_block);
+                builder.ins().trap(ir::TrapCode::User(0));
+                builder.seal_block(trap_block);
+
+                builder.switch_to_block(continue_block);
                 Ok(())
             }
-            // For now, ignore Drop and other operations (no-op) to allow simple programs
-            MirOp::Drop { .. } => Ok(()),
-            MirOp::FreeRegion { .. } => Ok(()),
-            MirOp::Allocate { .. } => Ok(()),
-            MirOp::BoundsCheck { .. } => Ok(()),
-            MirOp::ChannelSend { .. } => Err(RealCodegenError::UnsupportedOp("ChannelSend".to_string())),
-            MirOp::ChannelRecv { .. } => Err(RealCodegenError::UnsupportedOp("ChannelRecv".to_string())),
-            MirOp::SpawnTask { .. } => Err(RealCodegenError::UnsupportedOp("SpawnTask".to_string())),
-            MirOp::AwaitTask { .. } => Err(RealCodegenError::UnsupportedOp("AwaitTask".to_string())),
+            MirOp::ChannelSend { channel, value } => {
+                let channel_var = *var_map.get(channel).ok_or_else(|| {
+                    RealCodegenError::UnsupportedOp(format!("ChannelSend channel variable not found: {:?}", channel))
+                })?;
+                let channel_val = builder.use_var(channel_var);
+                let value_var = *var_map.get(value).ok_or_else(|| {
+                    RealCodegenError::UnsupportedOp(format!("ChannelSend value variable not found: {:?}", value))
+                })?;
+                let value_val = builder.use_var(value_var);
+                let send_id = self.func_map.get("once_runtime_send").ok_or_else(|| {
+                    RealCodegenError::UnsupportedOp("once_runtime_send not declared".to_string())
+                })?;
+                let module = self.module.as_mut().ok_or_else(||
+                    RealCodegenError::ModuleError("Module not available".to_string()))?;
+                let func_ref = module.declare_func_in_func(*send_id, &mut builder.func);
+                builder.ins().call(func_ref, &[channel_val, value_val]);
+                Ok(())
+            }
+            MirOp::ChannelRecv { channel, result } => {
+                let channel_var = *var_map.get(channel).ok_or_else(|| {
+                    RealCodegenError::UnsupportedOp(format!("ChannelRecv channel variable not found: {:?}", channel))
+                })?;
+                let channel_val = builder.use_var(channel_var);
+                let recv_id = self.func_map.get("once_runtime_recv").ok_or_else(|| {
+                    RealCodegenError::UnsupportedOp("once_runtime_recv not declared".to_string())
+                })?;
+                let module = self.module.as_mut().ok_or_else(||
+                    RealCodegenError::ModuleError("Module not available".to_string()))?;
+                let func_ref = module.declare_func_in_func(*recv_id, &mut builder.func);
+                let call_inst = builder.ins().call(func_ref, &[channel_val]);
+                let recv_val = builder.func.dfg.first_result(call_inst);
+                let var = get_or_create_var(var_map, next_var_idx, result);
+                declare_var(builder, declared_vars, var);
+                builder.def_var(var, recv_val);
+                Ok(())
+            }
+            MirOp::SpawnTask { function: _, args, result } => {
+                // For now, pass the function name as a pointer (placeholder)
+                // In a real implementation, we'd look up the function pointer
+                let func_ptr = builder.ins().iconst(types::I64, 0);
+                let mut arg_values = Vec::new();
+                for arg_loc in args {
+                    let arg_var = *var_map.get(arg_loc).ok_or_else(|| {
+                        RealCodegenError::UnsupportedOp(format!("SpawnTask arg variable not found: {:?}", arg_loc))
+                    })?;
+                    let val = builder.use_var(arg_var);
+                    arg_values.push(val);
+                }
+                // For simplicity, pass the first arg (or 0 if none)
+                let arg_ptr = arg_values.first().copied().unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
+                let spawn_id = self.func_map.get("once_runtime_spawn").ok_or_else(|| {
+                    RealCodegenError::UnsupportedOp("once_runtime_spawn not declared".to_string())
+                })?;
+                let module = self.module.as_mut().ok_or_else(||
+                    RealCodegenError::ModuleError("Module not available".to_string()))?;
+                let func_ref = module.declare_func_in_func(*spawn_id, &mut builder.func);
+                let call_inst = builder.ins().call(func_ref, &[func_ptr, arg_ptr]);
+                let task_handle = builder.func.dfg.first_result(call_inst);
+                let var = get_or_create_var(var_map, next_var_idx, result);
+                declare_var(builder, declared_vars, var);
+                builder.def_var(var, task_handle);
+                Ok(())
+            }
+            MirOp::AwaitTask { task, result } => {
+                let task_var = *var_map.get(task).ok_or_else(|| {
+                    RealCodegenError::UnsupportedOp(format!("AwaitTask task variable not found: {:?}", task))
+                })?;
+                let task_val = builder.use_var(task_var);
+                let await_id = self.func_map.get("once_runtime_await").ok_or_else(|| {
+                    RealCodegenError::UnsupportedOp("once_runtime_await not declared".to_string())
+                })?;
+                let module = self.module.as_mut().ok_or_else(||
+                    RealCodegenError::ModuleError("Module not available".to_string()))?;
+                let func_ref = module.declare_func_in_func(*await_id, &mut builder.func);
+                let call_inst = builder.ins().call(func_ref, &[task_val]);
+                let await_result = builder.func.dfg.first_result(call_inst);
+                let var = get_or_create_var(var_map, next_var_idx, result);
+                declare_var(builder, declared_vars, var);
+                builder.def_var(var, await_result);
+                Ok(())
+            }
             MirOp::Call { function, args, result } => {
                 // Look up the function reference in func_map
                 let func_id = self.func_map.get(function)
@@ -282,17 +578,47 @@ impl RealCraneliftCodegen {
                 // Build argument values
                 let mut arg_values = Vec::new();
                 for arg_loc in args {
-                    let val = loc_map.get(arg_loc).cloned().ok_or_else(|| {
-                        RealCodegenError::UnsupportedOp(format!("Call arg from uninitialized location: {:?}", arg_loc))
+                    let arg_var = *var_map.get(arg_loc).ok_or_else(|| {
+                        RealCodegenError::UnsupportedOp(format!("Call arg variable not found: {:?}", arg_loc))
                     })?;
+                    let val = builder.use_var(arg_var);
                     arg_values.push(val);
                 }
                 
                 let call_inst = builder.ins().call(func_ref, &arg_values);
                 let result_val = builder.func.dfg.first_result(call_inst);
-                loc_map.insert(result.clone(), result_val);
+                let var = get_or_create_var(var_map, next_var_idx, result);
+                declare_var(builder, declared_vars, var);
+                builder.def_var(var, result_val);
                 
                  Ok(())
+            }
+            MirOp::BinOp { op, left, right, dest } => {
+                let left_var = *var_map.get(left).ok_or_else(|| {
+                    RealCodegenError::UnsupportedOp("BinOp left operand not initialized".to_string())
+                })?;
+                let right_var = *var_map.get(right).ok_or_else(|| {
+                    RealCodegenError::UnsupportedOp("BinOp right operand not initialized".to_string())
+                })?;
+                let lhs = builder.use_var(left_var);
+                let rhs = builder.use_var(right_var);
+                let result = match op {
+                    once_mir::MirBinOp::Add => builder.ins().iadd(lhs, rhs),
+                    once_mir::MirBinOp::Sub => builder.ins().isub(lhs, rhs),
+                    once_mir::MirBinOp::Mul => builder.ins().imul(lhs, rhs),
+                    once_mir::MirBinOp::Div => builder.ins().udiv(lhs, rhs),
+                    _ => lhs, // TODO: implement all operations properly
+                };
+                let dest_var = get_or_create_var(var_map, next_var_idx, dest);
+                declare_var(builder, declared_vars, dest_var);
+                builder.def_var(dest_var, result);
+                Ok(())
+            }
+            MirOp::Return { .. } | MirOp::Jump { .. } | MirOp::Branch { .. } | MirOp::Label { .. } => {
+                // These should never reach translate_non_terminator; they are handled in define_function.
+                Err(RealCodegenError::UnsupportedOp(
+                    "Terminator or label reached translate_non_terminator".to_string()
+                ))
             }
         }
     }

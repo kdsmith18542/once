@@ -116,7 +116,7 @@ fn benchmark_match_expression() {
 /// Benchmark: Nested blocks
 #[test]
 fn benchmark_nested_blocks() {
-    let input = "{ { { { { let x = 1; } } } } }";
+    let input = "fn main() -> Unit { { { { let x = 1; } } } }";
     
     let tokens: Vec<TokenWithSpan> = Lexer::new(input).collect();
     let start = Instant::now();

@@ -7,4 +7,6 @@ description = "Type system for the Once language"
 
 [dependencies]
 once-hir = { path = "../once-hir" }
+once-lex = { path = "../once-lex" }
+once-linear = { path = "../once-linear" }
 thiserror = { workspace = true }

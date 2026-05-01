@@ -1,0 +1,8 @@
+[package]
+name = "once-parser-test"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+once-lex = { path = "G:/BACKUP/once/crates/once-lex" }
+once-parse = { path = "G:/BACKUP/once/crates/once-parse" }

@@ -3,7 +3,7 @@
 //! The HIR is a desugared, name-resolved representation of Once source code.
 //! It serves as the input to type checking and subsequent compiler passes.
 
-use once_parse::{Program, Item, FnDecl, LetDecl, Type, Expr, Stmt, Block, BinaryOp, Literal, Span};
+use once_parse::{Program, Item, FnDecl, LetDecl, GoalDecl, Type, Expr, Stmt, Block, BinaryOp, Literal, Span};
 mod import_resolver;
 use indexmap::IndexMap;
 use import_resolver::ImportResolver;
@@ -31,12 +31,16 @@ pub struct Import {
 pub enum HirItem {
     FnDecl(HirFnDecl),
     LetDecl(HirLetDecl),
+    TypeDecl(HirTypeDecl),
+    TraitDecl(HirTraitDecl),
+    ImplBlock(HirImplBlock),
 }
 
 /// Resolved function declaration
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HirFnDecl {
     pub name: String,
+    pub type_params: Vec<HirGenericParam>,
     pub params: Vec<HirParam>,
     pub return_type: Option<HirType>,
     pub effects: Option<HirEffectRow>,
@@ -59,6 +63,14 @@ pub struct HirParam {
     pub is_linear: bool,
 }
 
+/// Resolved generic parameter with bounds
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HirGenericParam {
+    pub name: String,
+    pub bounds: Vec<HirType>,
+    pub span: Option<(usize, usize)>,
+}
+
 /// Resolved let declaration
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HirLetDecl {
@@ -66,6 +78,40 @@ pub struct HirLetDecl {
     pub type_annotation: Option<HirType>,
     pub value: HirExpr,
     pub is_public: bool,
+    pub span: Option<(usize, usize)>,
+}
+
+/// Resolved type/enum declaration
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HirTypeDecl {
+    pub name: String,
+    pub type_params: Vec<HirGenericParam>,
+    pub variants: Vec<HirVariant>,
+    pub span: Option<(usize, usize)>,
+}
+
+/// Resolved variant in a type declaration
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HirVariant {
+    pub name: String,
+    pub fields: Vec<HirType>,
+}
+
+/// Resolved trait declaration
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HirTraitDecl {
+    pub name: String,
+    pub type_params: Vec<HirGenericParam>,
+    pub methods: Vec<HirFnDecl>,
+    pub span: Option<(usize, usize)>,
+}
+
+/// Resolved implementation block
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HirImplBlock {
+    pub trait_name: Option<String>,
+    pub target_type: HirType,
+    pub methods: Vec<HirFnDecl>,
     pub span: Option<(usize, usize)>,
 }
 
@@ -138,6 +184,34 @@ pub enum HirExpr {
     Call { function: String, args: Vec<HirExpr> },
     Binary { left: Box<HirExpr>, op: HirBinaryOp, right: Box<HirExpr> },
     Block(HirBlock),
+    If {
+        condition: Box<HirExpr>,
+        then_branch: HirBlock,
+        else_branch: Option<Box<HirExpr>>,
+    },
+    Match {
+        expr: Box<HirExpr>,
+        arms: Vec<(HirPattern, HirExpr)>,
+    },
+    For {
+        item: String,
+        collection: Box<HirExpr>,
+        body: HirBlock,
+    },
+    /// Array indexing
+    Index {
+        base: Box<HirExpr>,
+        index: Box<HirExpr>,
+    },
+    /// Try/unwrap operator
+    Try(Box<HirExpr>),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum HirPattern {
+    Literal(HirLiteral),
+    Ident(String),
+    Wildcard,
 }
 
 /// Resolved binary operators
@@ -146,6 +220,7 @@ pub enum HirBinaryOp {
     Add, Sub, Mul, Div,
     Eq, Ne, Lt, Le, Gt, Ge,
     And, Or,
+    Assign,
 }
 
 /// Resolved literals
@@ -229,6 +304,24 @@ impl HirBuilder {
                     let hir_let = self.resolve_let_decl(let_decl);
                     hir_items.push(HirItem::LetDecl(hir_let));
                 }
+                Item::TypeDecl(type_decl) => {
+                    let hir_type = self.resolve_type_decl(type_decl);
+                    hir_items.push(HirItem::TypeDecl(hir_type));
+                }
+                Item::TraitDecl(trait_decl) => {
+                    let hir_trait = self.resolve_trait_decl(trait_decl);
+                    hir_items.push(HirItem::TraitDecl(hir_trait));
+                }
+                Item::ImplBlock(impl_block) => {
+                    let hir_impl = self.resolve_impl_block(impl_block);
+                    hir_items.push(HirItem::ImplBlock(hir_impl));
+                }
+                Item::GoalDecl(goal_decl) => {
+                    // Goals are lowered to function declarations for the compiler pipeline;
+                    // AI solver hooks operate at a higher level.
+                    let hir_fn = self.resolve_goal_decl(goal_decl);
+                    hir_items.push(HirItem::FnDecl(hir_fn));
+                }
             }
         }
 
@@ -242,12 +335,32 @@ impl HirBuilder {
         }
     }
 
-fn resolve_fn_decl(&mut self, fn_decl: FnDecl) -> HirFnDecl {
+    fn resolve_generic_param(&mut self, param: once_parse::GenericParam) -> HirGenericParam {
+        HirGenericParam {
+            name: param.name,
+            bounds: param.bounds.into_iter().map(|t| self.resolve_type(t)).collect(),
+            span: param.span.map(|s| (s.start, s.end)),
+        }
+    }
+
+    pub fn is_linear_type(ty: &HirType) -> bool {
+        matches!(ty, HirType::Linear(_) | HirType::Affine(_))
+    }
+
+    fn resolve_fn_decl(&mut self, fn_decl: FnDecl) -> HirFnDecl {
+        let type_params = fn_decl.type_params.into_iter()
+            .map(|p| self.resolve_generic_param(p))
+            .collect();
+
         let params = fn_decl.params.into_iter()
-            .map(|param| HirParam {
-                name: param.name.clone(),
-                type_annotation: param.type_annotation.map(|t| self.resolve_type(t)),
-                is_linear: false, // Will be determined during type checking
+            .map(|param| {
+                let hir_ty = param.type_annotation.map(|t| self.resolve_type(t));
+                let is_linear = hir_ty.as_ref().map_or(false, |t| HirBuilder::is_linear_type(t));
+                HirParam {
+                    name: param.name.clone(),
+                    type_annotation: hir_ty,
+                    is_linear,
+                }
             })
             .collect();
 
@@ -260,12 +373,48 @@ fn resolve_fn_decl(&mut self, fn_decl: FnDecl) -> HirFnDecl {
 
         HirFnDecl {
             name: fn_decl.name,
+            type_params,
             params,
             return_type: fn_decl.return_type.map(|t| self.resolve_type(t)),
             effects,
             body,
             is_public: false, // Will be determined by visibility analysis
             span: fn_decl.span.map(|s| (s.start, s.end)),
+        }
+    }
+
+    fn resolve_goal_decl(&mut self, goal_decl: GoalDecl) -> HirFnDecl {
+        let type_params = goal_decl.type_params.into_iter()
+            .map(|p| self.resolve_generic_param(p))
+            .collect();
+
+        let params = goal_decl.params.into_iter()
+            .map(|param| {
+                let hir_ty = param.type_annotation.map(|t| self.resolve_type(t));
+                let is_linear = hir_ty.as_ref().map_or(false, |t| HirBuilder::is_linear_type(t));
+                HirParam {
+                    name: param.name.clone(),
+                    type_annotation: hir_ty,
+                    is_linear,
+                }
+            })
+            .collect();
+
+        let body = self.resolve_block(goal_decl.body);
+
+        let effects = goal_decl.effects.map(|e| HirEffectRow {
+            effects: e.effects,
+        });
+
+        HirFnDecl {
+            name: goal_decl.name,
+            type_params,
+            params,
+            return_type: goal_decl.return_type.map(|t| self.resolve_type(t)),
+            effects,
+            body,
+            is_public: false,
+            span: goal_decl.span.map(|s| (s.start, s.end)),
         }
     }
 
@@ -276,6 +425,40 @@ fn resolve_fn_decl(&mut self, fn_decl: FnDecl) -> HirFnDecl {
             value: self.resolve_expr(let_decl.value),
             is_public: false, // Will be determined by visibility analysis
             span: let_decl.span.map(|s| (s.start, s.end)),
+        }
+    }
+
+    fn resolve_type_decl(&mut self, type_decl: once_parse::TypeDecl) -> HirTypeDecl {
+        HirTypeDecl {
+            name: type_decl.name,
+            type_params: type_decl.type_params.into_iter()
+                .map(|p| self.resolve_generic_param(p))
+                .collect(),
+            variants: type_decl.variants.into_iter().map(|v| HirVariant {
+                name: v.name,
+                fields: v.fields.into_iter().map(|t| self.resolve_type(t)).collect(),
+            }).collect(),
+            span: type_decl.span.map(|s| (s.start, s.end)),
+        }
+    }
+
+    fn resolve_trait_decl(&mut self, trait_decl: once_parse::TraitDecl) -> HirTraitDecl {
+        HirTraitDecl {
+            name: trait_decl.name,
+            type_params: trait_decl.type_params.into_iter()
+                .map(|p| self.resolve_generic_param(p))
+                .collect(),
+            methods: trait_decl.methods.into_iter().map(|m| self.resolve_fn_decl(m)).collect(),
+            span: trait_decl.span.map(|s| (s.start, s.end)),
+        }
+    }
+
+    fn resolve_impl_block(&mut self, impl_block: once_parse::ImplBlock) -> HirImplBlock {
+        HirImplBlock {
+            trait_name: impl_block.trait_name,
+            target_type: self.resolve_type(impl_block.target_type),
+            methods: impl_block.methods.into_iter().map(|m| self.resolve_fn_decl(m)).collect(),
+            span: impl_block.span.map(|s| (s.start, s.end)),
         }
     }
 
@@ -291,14 +474,18 @@ fn resolve_fn_decl(&mut self, fn_decl: FnDecl) -> HirFnDecl {
 
 fn resolve_stmt(&mut self, stmt: Stmt) -> HirStmt {
         match stmt {
-            Stmt::Let(let_stmt) => HirStmt::Let(HirLetStmt {
-                name: let_stmt.name,
-                type_annotation: let_stmt.type_annotation.map(|t| self.resolve_type(t)),
-                value: self.resolve_expr(let_stmt.value),
-                is_linear: false, // Will be determined during type checking
-                span: let_stmt.span
-                    .map(|s| (s.start, s.end)),
-            }),
+            Stmt::Let(let_stmt) => {
+                let hir_ty = let_stmt.type_annotation.map(|t| self.resolve_type(t));
+                let is_linear = hir_ty.as_ref().map_or(false, |t| HirBuilder::is_linear_type(t));
+                HirStmt::Let(HirLetStmt {
+                    name: let_stmt.name,
+                    type_annotation: hir_ty,
+                    value: self.resolve_expr(let_stmt.value),
+                    is_linear,
+                    span: let_stmt.span
+                        .map(|s| (s.start, s.end)),
+                })
+            },
             Stmt::Return(return_stmt) => HirStmt::Return(HirReturnStmt {
                 value: return_stmt.value.map(|e| self.resolve_expr(e)),
                 span: return_stmt.span.map(|s| (s.start, s.end)),
@@ -328,6 +515,33 @@ fn resolve_stmt(&mut self, stmt: Stmt) -> HirStmt {
                 right: Box::new(self.resolve_expr(*right)),
             },
             Expr::Block(block) => HirExpr::Block(self.resolve_block(block)),
+            Expr::If { condition, then_branch, else_branch } => HirExpr::If {
+                condition: Box::new(self.resolve_expr(*condition)),
+                then_branch: self.resolve_block(then_branch),
+                else_branch: else_branch.map(|b| Box::new(self.resolve_expr(*b))),
+            },
+            Expr::Match { expr, arms } => HirExpr::Match {
+                expr: Box::new(self.resolve_expr(*expr)),
+                arms: arms.into_iter().map(|(p, e)| (self.resolve_pattern(p), self.resolve_expr(e))).collect(),
+            },
+            Expr::For { item, collection, body } => HirExpr::For {
+                item,
+                collection: Box::new(self.resolve_expr(*collection)),
+                body: self.resolve_block(body),
+            },
+            Expr::Index { base, index } => HirExpr::Index {
+                base: Box::new(self.resolve_expr(*base)),
+                index: Box::new(self.resolve_expr(*index)),
+            },
+            Expr::Try(inner) => HirExpr::Try(Box::new(self.resolve_expr(*inner))),
+        }
+    }
+
+    fn resolve_pattern(&mut self, pat: once_parse::Pattern) -> HirPattern {
+        match pat {
+            once_parse::Pattern::Literal(lit) => HirPattern::Literal(self.resolve_literal(lit)),
+            once_parse::Pattern::Ident(name) => HirPattern::Ident(name),
+            once_parse::Pattern::Wildcard => HirPattern::Wildcard,
         }
     }
 
@@ -375,6 +589,7 @@ fn resolve_stmt(&mut self, stmt: Stmt) -> HirStmt {
             BinaryOp::Ge => HirBinaryOp::Ge,
             BinaryOp::And => HirBinaryOp::And,
             BinaryOp::Or => HirBinaryOp::Or,
+            BinaryOp::Assign => HirBinaryOp::Assign,
         }
     }
 }

@@ -1,0 +1,5 @@
+fn main() -> Unit {
+    using f = File.open("test.txt") {
+        print("hello")
+    }
+}

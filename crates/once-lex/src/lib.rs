@@ -85,6 +85,62 @@ pub enum Token {
     #[token("None")]
     None,
 
+    // Additional Keywords from ONCE-002
+    #[token("while")]
+    While,
+    #[token("enum")]
+    Enum,
+    #[token("try")]
+    Try,
+    #[token("catch")]
+    Catch,
+    #[token("class")]
+    Class,
+    #[token("const")]
+    Const,
+    #[token("continue")]
+    Continue,
+    #[token("export")]
+    Export,
+    #[token("import")]
+    Import,
+    #[token("in")]
+    In,
+    #[token("module")]
+    Module,
+    #[token("mut")]
+    Mut,
+    #[token("pub")]
+    Pub,
+    #[token("self")]
+    SelfKw, // self is a reserved word in Rust
+    #[token("unsafe")]
+    Unsafe,
+    #[token("where")]
+    Where,
+    #[token("defer")]
+    Defer,
+    #[token("do")]
+    Do,
+    #[token("goto")]
+    Goto,
+    #[token("interface")]
+    Interface,
+    #[token("package")]
+    Package,
+    #[token("super")]
+    Super,
+    #[token("union")]
+    Union,
+    #[token("volatile")]
+    Volatile,
+    #[token("yield")]
+    Yield,
+    #[token("as")]
+    As,
+    #[token("goal")]
+    Goal,
+
     // Identifiers and literals
     #[regex(r"[a-zA-Z_][a-zA-Z0-9_]*", |lex| lex.slice().to_string())]
     Ident(String),
@@ -92,7 +148,7 @@ pub enum Token {
     #[regex(r"[0-9]+", |lex| lex.slice().parse::<i64>().unwrap())]
     IntLit(i64),
     
-    #[regex(r"[0-9]+\\.[0-9]+", |lex| lex.slice().parse::<f64>().unwrap())]
+    #[regex(r"[0-9]+\.[0-9]+", |lex| lex.slice().parse::<f64>().unwrap())]
     FloatLit(f64),
     
     #[regex(r#""([^"\\]|\\.)*""#, |lex| {
@@ -334,7 +390,7 @@ mod tests {
         let mut lexer = Lexer::new(source);
         
         let tokens: Vec<_> = lexer.collect();
-        assert_eq!(tokens.len(), 8);
+        assert_eq!(tokens.len(), 9);
         assert_eq!(tokens[0].token, Token::Fn);
         assert_eq!(tokens[1].token, Token::Ident("main".to_string()));
         assert_eq!(tokens[2].token, Token::LParen);
@@ -343,6 +399,7 @@ mod tests {
         assert_eq!(tokens[5].token, Token::Unit);
         assert_eq!(tokens[6].token, Token::LBrace);
         assert_eq!(tokens[7].token, Token::Return);
+        assert_eq!(tokens[8].token, Token::RBrace);
     }
 
     #[test]

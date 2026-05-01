@@ -5,7 +5,6 @@ edition = "2021"
 
 [dependencies]
 once-onceo = { path = "../once-onceo" }
-once-effects = { path = "../once-effects" }
 once-ty = { path = "../once-ty" }
 thiserror = "1.0"
 

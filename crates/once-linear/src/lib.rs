@@ -7,23 +7,40 @@
 //! - Closure capture rules
 
 use once_hir::*;
-use once_ty::{Type, TypeVar};
 use once_lex::Span;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use thiserror::Error;
 
-/// Linearity checking errors
+/// Source span for error reporting
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SourceSpan {
+    pub start: usize,
+    pub end: usize,
+    pub line: usize,
+    pub column: usize,
+}
+
+impl fmt::Display for SourceSpan {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{} ({}..{})", self.line, self.column, self.start, self.end)
+    }
+}
+
+/// Linearity checking errors with optional source location
 #[derive(Error, Debug, Clone)]
 pub enum LinearityError {
-    #[error("Linear value used multiple times: {0}")]
-    LinearValueReused(String),
+    #[error("Linear value used multiple times: {name}")]
+    LinearValueReused { name: String, span: Option<SourceSpan> },
     
-    #[error("Non-linear value in linear context: {0}")]
-    NonLinearInLinearContext(String),
+    #[error("Non-linear value in linear context: {name}")]
+    NonLinearInLinearContext { name: String, span: Option<SourceSpan> },
     
-    #[error("Linear value not consumed: {0}")]
-    LinearValueNotConsumed(String),
+    #[error("Linear value not consumed: {name}")]
+    LinearValueNotConsumed { name: String, span: Option<SourceSpan> },
+
+    #[error("Linear variable usage mismatch in branches: {name}")]
+    BranchUsageMismatch { name: String, span: Option<SourceSpan> },
     
     #[error("Copy constraint violated: {0}")]
     CopyConstraintViolated(String),
@@ -33,6 +50,25 @@ pub enum LinearityError {
     
     #[error("Closure capture violation: {0}")]
     ClosureCaptureViolation(String),
+}
+
+impl LinearityError {
+    pub fn span(&self) -> Option<SourceSpan> {
+        match self {
+            LinearityError::LinearValueReused { span, .. } => *span,
+            LinearityError::NonLinearInLinearContext { span, .. } => *span,
+            LinearityError::LinearValueNotConsumed { span, .. } => *span,
+            LinearityError::BranchUsageMismatch { span, .. } => *span,
+            _ => None,
+        }
+    }
+
+    pub fn diagnostic(&self) -> String {
+        match self.span() {
+            Some(span) => format!("{} at {}", self, span),
+            None => self.to_string(),
+        }
+    }
 }
 
 /// Linearity information for variables
@@ -139,12 +175,18 @@ impl LinearityEnv {
             match usage.linearity {
                 Linearity::Linear => {
                     if usage.usage_count > 1 {
-                        return Err(LinearityError::LinearValueReused(name.to_string()));
+                        return Err(LinearityError::LinearValueReused {
+                            name: name.to_string(),
+                            span: Some(SourceSpan { start: span.start, end: span.end, line: span.line, column: span.column }),
+                        });
                     }
                 }
                 Linearity::Affine => {
                     if usage.usage_count > 1 {
-                        return Err(LinearityError::LinearValueReused(name.to_string()));
+                        return Err(LinearityError::LinearValueReused {
+                            name: name.to_string(),
+                            span: Some(SourceSpan { start: span.start, end: span.end, line: span.line, column: span.column }),
+                        });
                     }
                 }
                 Linearity::NonLinear => {
@@ -234,6 +276,9 @@ impl LinearityChecker {
         match item {
             HirItem::FnDecl(fn_decl) => self.check_fn_decl(fn_decl),
             HirItem::LetDecl(let_decl) => self.check_let_decl(let_decl),
+            HirItem::TypeDecl(_) => Ok(()),
+            HirItem::TraitDecl(_) => Ok(()),
+            HirItem::ImplBlock(_) => Ok(()),
         }
     }
 
@@ -255,12 +300,26 @@ impl LinearityChecker {
         // Check function body
         self.check_block(&fn_decl.body, &mut fn_env)?;
 
+        // Check for unconsumed linear values in function scope
+        for (name, usage) in &fn_env.variables {
+            if usage.linearity == Linearity::Linear && usage.usage_count == 0 && usage.first_use.is_none() {
+                        self.errors.push(LinearityError::LinearValueNotConsumed {
+                            name: name.clone(),
+                            span: None,
+                        });
+            }
+        }
+
         // Merge back to main environment
         self.env.variables.extend(fn_env.variables);
         self.env.copy_constraints.extend(fn_env.copy_constraints);
         self.env.resource_traits.extend(fn_env.resource_traits);
 
-        Ok(())
+        if self.errors.is_empty() {
+            Ok(())
+        } else {
+            Err(self.errors.clone())
+        }
     }
 
     fn check_let_decl(&mut self, let_decl: &HirLetDecl) -> Result<(), Vec<LinearityError>> {
@@ -385,6 +444,118 @@ impl LinearityChecker {
                 self.check_block(block, env)?;
                 Ok(())
             }
+            HirExpr::If { condition, then_branch, else_branch } => {
+                self.check_expr_with_env(condition, env)?;
+                
+                let mut then_env = env.clone();
+                self.check_block(then_branch, &mut then_env)?;
+                
+                if let Some(else_expr) = else_branch {
+                    let mut else_env = env.clone();
+                    self.check_expr_with_env(else_expr, &mut else_env)?;
+                    
+                    for (name, then_usage) in &then_env.variables {
+                        if let Some(else_usage) = else_env.variables.get(name) {
+                            if then_usage.linearity == Linearity::Linear || then_usage.linearity == Linearity::Affine {
+                                if then_usage.usage_count != else_usage.usage_count {
+                                    self.errors.push(LinearityError::BranchUsageMismatch {
+                                        name: name.clone(),
+                                        span: None,
+                                    });
+                                }
+                            }
+
+                            if let Some(env_usage) = env.variables.get_mut(name) {
+                                env_usage.usage_count = then_usage.usage_count.max(else_usage.usage_count);
+                            }
+                        }
+                    }
+                } else {
+                    for (name, then_usage) in &then_env.variables {
+                        if let Some(env_usage) = env.variables.get_mut(name) {
+                             if then_usage.linearity == Linearity::Linear {
+                                if then_usage.usage_count != env_usage.usage_count {
+                                     self.errors.push(LinearityError::BranchUsageMismatch {
+                                        name: name.clone(),
+                                        span: None,
+                                    });
+                                }
+                            }
+                            env_usage.usage_count = env_usage.usage_count.max(then_usage.usage_count);
+                        }
+                    }
+                }
+                Ok(())
+            }
+            HirExpr::Match { expr, arms } => {
+                self.check_expr_with_env(expr, env)?;
+                
+                let mut max_usages = std::collections::HashMap::new();
+                let mut first_arm_usage = None;
+
+                for (_, arm_expr) in arms {
+                    let mut arm_env = env.clone();
+                    self.check_expr_with_env(arm_expr, &mut arm_env)?;
+                    
+                    if first_arm_usage.is_none() {
+                        first_arm_usage = Some(arm_env.variables.clone());
+                    } else {
+                        // Compare with first arm to ensure consistency for linear variables
+                        for (name, arm_usage) in &arm_env.variables {
+                            if let Some(first_usage) = first_arm_usage.as_ref().unwrap().get(name) {
+                                if arm_usage.linearity == Linearity::Linear || arm_usage.linearity == Linearity::Affine {
+                                    if arm_usage.usage_count != first_usage.usage_count {
+                                        self.errors.push(LinearityError::BranchUsageMismatch {
+                                            name: name.clone(),
+                                            span: None,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    for (name, arm_usage) in &arm_env.variables {
+                        let current_max = max_usages.get(name).cloned().unwrap_or(0);
+                        max_usages.insert(name.clone(), current_max.max(arm_usage.usage_count));
+                    }
+                }
+                
+                for (name, max_usage) in max_usages {
+                    if let Some(env_usage) = env.variables.get_mut(&name) {
+                        env_usage.usage_count = env_usage.usage_count.max(max_usage);
+                    }
+                }
+                
+                Ok(())
+            }
+            HirExpr::For { item, collection, body } => {
+                self.check_expr_with_env(collection, env)?;
+                
+                let mut body_env = env.clone();
+                self.check_block(body, &mut body_env)?;
+                
+                for (name, body_usage) in &body_env.variables {
+                    if let Some(env_usage) = env.variables.get_mut(name) {
+                        if body_usage.usage_count > env_usage.usage_count && (env_usage.linearity == Linearity::Linear || env_usage.linearity == Linearity::Affine) {
+                            self.errors.push(LinearityError::ClosureCaptureViolation(
+                                format!("Linear variable '{}' cannot be used inside a for loop", name)
+                            ));
+                        }
+                        env_usage.usage_count = env_usage.usage_count.max(body_usage.usage_count);
+                    }
+                }
+                
+                Ok(())
+            }
+            HirExpr::Index { base, index } => {
+                self.check_expr_with_env(base, env)?;
+                self.check_expr_with_env(index, env)?;
+                Ok(())
+            }
+            HirExpr::Try(inner) => {
+                self.check_expr_with_env(inner, env)
+            }
         }
     }
 
@@ -392,15 +563,16 @@ impl LinearityChecker {
         for (name, usage) in &self.env.variables {
             match usage.linearity {
                 Linearity::Linear => {
-                    if usage.usage_count > 0 {
-                        self.errors.push(LinearityError::LinearValueNotConsumed(name.clone()));
+                    if usage.usage_count == 0 && usage.first_use.is_none() {
+                self.errors.push(LinearityError::LinearValueNotConsumed {
+                    name: name.clone(),
+                    span: None,
+                });
                     }
                 }
                 Linearity::Affine => {
-                    // Affine values can be unconsumed
                 }
                 Linearity::NonLinear => {
-                    // Non-linear values don't need consumption
                 }
             }
         }
@@ -412,7 +584,6 @@ impl LinearityChecker {
         }
     }
 
-    /// Analyze closure capture
     pub fn analyze_closure_capture(&mut self, closure_id: &str, captured_vars: Vec<String>) -> Result<ClosureCapture, Vec<LinearityError>> {
         let mut linear_captures = Vec::new();
         let mut ownership_transfer = false;
@@ -427,12 +598,10 @@ impl LinearityChecker {
                         capture_depth = capture_depth.max(usage_info.usage_count);
                     }
                     Linearity::Affine => {
-                        // Affine types can be captured but must be consumed
                         linear_captures.push(var_name.clone());
                         ownership_transfer = true;
                     }
                     Linearity::NonLinear => {
-                        // Non-linear types can be captured freely
                     }
                 }
             }
@@ -451,17 +620,14 @@ impl LinearityChecker {
             capture_depth,
         };
         
-        // Validate closure capture rules
         self.validate_closure_capture(&capture)?;
         
         Ok(capture)
     }
 
-    /// Validate closure capture rules
     fn validate_closure_capture(&self, capture: &ClosureCapture) -> Result<(), Vec<LinearityError>> {
         let mut errors = Vec::new();
         
-        // Rule 1: Linear values must be moved into the closure
         for linear_var in &capture.linear_captures {
             if let Some(usage_info) = self.env.variables.get(linear_var) {
                 if usage_info.usage_count > 1 {
@@ -473,7 +639,6 @@ impl LinearityChecker {
             }
         }
         
-        // Rule 2: Linear closures can only be called once
         if capture.is_linear && capture.usage_count > 1 {
             errors.push(LinearityError::ClosureCaptureViolation(
                 format!("Linear closure '{}' used {} times", 
@@ -481,7 +646,6 @@ impl LinearityChecker {
             ));
         }
         
-        // Rule 3: Nested linear closures must transfer ownership
         if capture.capture_depth > 1 && !capture.ownership_transfer {
             errors.push(LinearityError::ClosureCaptureViolation(
                 format!("Nested linear closure '{}' must transfer ownership", 
@@ -496,18 +660,15 @@ impl LinearityChecker {
         }
     }
 
-    /// Check closure usage
     pub fn check_closure_usage(&mut self, closure_id: &str) -> Result<(), Vec<LinearityError>> {
         if let Some(capture) = self.env.closure_captures.iter().find(|c| c.closure_id == closure_id) {
             if capture.is_linear {
-                // Linear closures can only be used once
                 if capture.usage_count > 0 {
                     return Err(vec![LinearityError::ClosureCaptureViolation(
                         format!("Linear closure '{}' already used", closure_id)
                     )]);
                 }
                 
-                // Mark as used
                 if let Some(capture_mut) = self.env.closure_captures.iter_mut().find(|c| c.closure_id == closure_id) {
                     capture_mut.usage_count += 1;
                 }
@@ -517,12 +678,10 @@ impl LinearityChecker {
         Ok(())
     }
 
-    /// Get closure capture information
     pub fn get_closure_capture(&self, closure_id: &str) -> Option<&ClosureCapture> {
         self.env.closure_captures.iter().find(|c| c.closure_id == closure_id)
     }
 
-    /// Check for unconsumed linear captures
     pub fn check_unconsumed_captures(&self) -> Result<(), Vec<LinearityError>> {
         let mut errors = Vec::new();
         
@@ -542,7 +701,6 @@ impl LinearityChecker {
     }
 }
 
-/// Linearity chain for debugging
 #[derive(Debug, Clone)]
 pub struct LinearityChain {
     pub first_use: Span,
@@ -571,7 +729,6 @@ mod tests {
     fn test_linear_variable_usage() {
         let mut checker = LinearityChecker::new();
         
-        // Test linear variable that's used once
         let mut env = LinearityEnv::new();
         env.add_variable("x".to_string(), Linearity::Linear);
         env.use_variable("x", Span::new(0, 0, 0, 0)).unwrap();
@@ -584,13 +741,12 @@ mod tests {
     fn test_linear_variable_reuse() {
         let mut checker = LinearityChecker::new();
         
-        // Test linear variable that's used twice (should fail)
         let mut env = LinearityEnv::new();
         env.add_variable("x".to_string(), Linearity::Linear);
         env.use_variable("x", Span::new(0, 0, 0, 0)).unwrap();
         let result = env.use_variable("x", Span::new(1, 1, 1, 1));
         
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), LinearityError::LinearValueReused(_)));
+        assert!(matches!(result.unwrap_err(), LinearityError::LinearValueReused { .. }));
     }
 }

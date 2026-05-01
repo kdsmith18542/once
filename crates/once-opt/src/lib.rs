@@ -7,7 +7,7 @@
 //! - Loop unrolling for known iterations
 
 use once_hir::{HirProgram, HirItem, HirExpr, HirStmt, HirFnDecl};
-use once_mir::{MirProgram, MirBlock, MirOp};
+use once_mir::{MirProgram, MirBlock, MirOp, MirStmt};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -52,11 +52,11 @@ impl Optimizer {
 
     fn optimize_function(&mut self, fn_decl: &mut HirFnDecl) -> bool {
         let mut changed = false;
-        changed |= self.constant_fold_block(&mut fn_decl.body);
+        changed |= self.constant_fold_block(&mut fn_decl.body.statements);
         changed
     }
 
-    fn constant_fold_block(&mut self, block: &mut Vec<HirStmt>) -> bool {
+    fn constant_fold_block(&mut self, _block: &mut Vec<HirStmt>) -> bool {
         false
     }
 
@@ -67,25 +67,14 @@ impl Optimizer {
         Ok(())
     }
 
-    fn optimize_mir_function(&mut self, func: &mut once_mir::MirFn) {
-        for block in &mut func.blocks {
-            self.optimize_mir_block(block);
+    fn optimize_mir_function(&mut self, func: &mut once_mir::MirFunction) {
+        for block in &mut func.body.statements {
+            self.optimize_mir_statement(block);
         }
     }
 
-    fn optimize_mir_block(&mut self, block: &mut MirBlock) {
-        let mut i = 0;
-        while i < block.ops.len() {
-            if let MirOp::Const { .. } = &block.ops[i] {
-                if i + 1 < block.ops.len() {
-                    if let MirOp::BinOp { .. } = &block.ops[i + 1] {
-                        block.ops.remove(i);
-                        continue;
-                    }
-                }
-            }
-            i += 1;
-        }
+    fn optimize_mir_statement(&mut self, _stmt: &mut MirStmt) {
+        // TODO: Implement MIR statement-level optimizations once MIR op set stabilizes
     }
 }
 

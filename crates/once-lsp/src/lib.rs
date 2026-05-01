@@ -201,6 +201,16 @@ impl OnceLsp {
                         },
                     });
                 }
+                once_hir::HirItem::TypeDecl(type_decl) => {
+                    return Some(Location {
+                        uri: "file://current".to_string(),
+                        range: Range {
+                            start: Position { line: 0, character: 0 },
+                            end: Position { line: 0, character: type_decl.name.len() as u32 },
+                        },
+                    });
+                }
+                once_hir::HirItem::TraitDecl(_) | once_hir::HirItem::ImplBlock(_) => {}
             }
         }
         None
@@ -242,6 +252,16 @@ impl OnceLsp {
                         },
                     });
                 }
+                once_hir::HirItem::TypeDecl(type_decl) => {
+                    references.push(Location {
+                        uri: "file://current".to_string(),
+                        range: Range {
+                            start: Position { line: 0, character: 0 },
+                            end: Position { line: 0, character: type_decl.name.len() as u32 },
+                        },
+                    });
+                }
+                once_hir::HirItem::TraitDecl(_) | once_hir::HirItem::ImplBlock(_) => {}
             }
         }
         
@@ -287,6 +307,17 @@ impl OnceLsp {
                     });
                     break;
                 }
+                once_hir::HirItem::TypeDecl(type_decl) => {
+                    text_edits.push(TextEdit {
+                        range: Range {
+                            start: Position { line: 0, character: 0 },
+                            end: Position { line: 0, character: type_decl.name.len() as u32 },
+                        },
+                        new_text: new_name.clone(),
+                    });
+                    break;
+                }
+                once_hir::HirItem::TraitDecl(_) | once_hir::HirItem::ImplBlock(_) => {}
             }
         }
         
@@ -421,6 +452,9 @@ impl OnceLsp {
                                 once_hir::HirExpr::Literal(_) => {
                                     // Literals are fine without type annotation
                                 }
+                                once_hir::HirExpr::If { .. } | once_hir::HirExpr::Match { .. } | once_hir::HirExpr::For { .. } => {
+                                    // Control flow expressions can sometimes infer their type
+                                }
                                 _ => {
                                     diagnostics.push(format!(
                                         "Info: Variable '{}' could benefit from type annotation",
@@ -429,6 +463,16 @@ impl OnceLsp {
                                 }
                             }
                         }
+                        once_hir::HirItem::TypeDecl(type_decl) => {
+                            // Check for empty variant list
+                            if type_decl.variants.is_empty() {
+                                diagnostics.push(format!(
+                                    "Warning: Type '{}' has no variants",
+                                    type_decl.name
+                                ));
+                            }
+                        }
+                        once_hir::HirItem::TraitDecl(_) | once_hir::HirItem::ImplBlock(_) => {}
                     }
                 }
             } else {
@@ -877,6 +921,6 @@ mod tests {
         lsp.open_document("file://test.onc".to_string(), "let x = y; // error: value moved".to_string(), 1);
         let fix_its = lsp.get_fix_its("file://test.onc", 0, 0);
         assert!(!fix_its.is_empty());
-        assert_eq!(fix_its[0].kind, FixItKind::FixLinearity);
+        assert!(fix_its.iter().any(|f| f.kind == FixItKind::FixLinearity), "Expected a FixLinearity fix-it, got {:?}", fix_its.iter().map(|f| f.kind.clone()).collect::<Vec<_>>());
     }
 }

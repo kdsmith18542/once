@@ -1,5 +1,5 @@
 use once_onceo::{OnceoModule, EffectSummary, TypeSummary, RegionSummary};
-use once_effects::{EffectRow, EffectLabel};
+use once_ty::effects::{EffectRow, EffectLabel};
 use once_ty::{Type, TypeVar};
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;

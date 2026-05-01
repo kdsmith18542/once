@@ -84,8 +84,25 @@ Acceptance criteria are verifiable by running specific cargo test commands.
 
 ### Phase 0: Parser Completion (ONCE-002)
 
-**Status:** IN PROGRESS (9 tests failing)
-**Priority:** CRITICAL — blocks all other work
+**Status:** ✅ COMPLETE
+**Tests:** 24/24 regression tests pass; 35/35 unit tests pass
+
+All ONCE-002 syntax is parsed correctly: functions, let/var, if/else, match, for, binary ops with full precedence, pipeline operator, array indexing, generic types, ADT/type declarations, trait/impl blocks, goal declarations, effect rows, and using blocks.
+
+### Phase 1: HIR & Semantic Analysis (ONCE-003)
+
+**Status:** ✅ COMPLETE with minor fix applied
+**Tests:** All type system, trait resolution, effect, and linearity tests pass
+
+**Completed:**
+- [x] HIR mirrors AST with full expression support (If, Match, For, Index, Try)
+- [x] Type declarations, trait declarations, and impl blocks lowered to HIR
+- [x] Goal declarations lowered to function declarations
+- [x] Fixed `is_linear` flag population from type annotations (was hardcoded `false`)
+- [x] All 178 tests pass across 19 test suites
+
+**Deferred (lower priority):**
+- 1.6 Desugar `using` blocks at HIR level (currently handled in MIR)
 
 **Tasks:**
 
@@ -107,11 +124,12 @@ Acceptance criteria are verifiable by running specific cargo test commands.
 
 ---
 
-### Phase 1: HIR & Semantic Analysis (ONCE-003)
+---
 
-**Status:** INCOMPLETE
-**Priority:** HIGH — type system depends on correct HIR
-**Depends on:** Phase 0
+### Phase 2: MIR Lowering Completion (ONCE-004)
+
+**Status:** 🔄 IN PROGRESS
+**Priority:** HIGH
 
 **Tasks:**
 

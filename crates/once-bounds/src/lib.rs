@@ -158,6 +158,10 @@ impl BoundsChecker {
             HirStmt::Expr(expr) => {
                 self.check_expr(expr)?;
             }
+            HirStmt::Using(using_stmt) => {
+                self.check_expr(&using_stmt.init)?;
+                self.check_block(&using_stmt.body)?;
+            }
         }
         Ok(())
     }
@@ -174,6 +178,7 @@ impl BoundsChecker {
                     self.check_expr(arg)?;
                 }
             }
+            HirExpr::If { .. } | HirExpr::Match { .. } | HirExpr::For { .. } => {} // TODO: Phase 2
             HirExpr::Block(block) => {
                 self.check_block(block)?;
             }

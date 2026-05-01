@@ -1,6 +1,6 @@
 use once_hir::HirProgram;
 use once_ty::{Type, TypeVar, Region};
-use once_effects::{EffectRow, EffectLabel};
+use once_ty::effects::{EffectRow, EffectLabel};
 use once_rinf::{RegionConstraint, RegionDag};
 use std::collections::HashMap;
 use thiserror::Error;

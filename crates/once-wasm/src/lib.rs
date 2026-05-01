@@ -444,10 +444,13 @@ mod tests {
             name: "main".to_string(),
             params: Vec::new(),
             return_type: None,
+            effects: None,
             body: HirBlock {
                 statements: vec![],
+                span: None,
             },
             is_public: false,
+            span: None,
         };
         
         program.items.push(HirItem::FnDecl(fn_decl));

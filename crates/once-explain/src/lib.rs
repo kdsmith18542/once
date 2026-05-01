@@ -1,6 +1,6 @@
 use once_hir::HirProgram;
 use once_ty::{TypeChecker, Type};
-use once_effects::{EffectChecker, EffectRow};
+use once_ty::effects::{EffectChecker, EffectRow};
 use once_linear::{LinearityChecker, Linearity, UsageInfo};
 use once_rinf::{RegionChecker, Region};
 use once_lex::Span;
@@ -455,10 +455,13 @@ mod tests {
                     name: "main".to_string(),
                     params: vec![],
                     return_type: None,
+                    effects: None,
                     body: HirBlock {
                         statements: vec![],
+                        span: None,
                     },
                     is_public: false,
+                    span: None,
                 }),
             ],
             imports: vec![],

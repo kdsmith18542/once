@@ -6,7 +6,6 @@ edition = "2021"
 [dependencies]
 once-hir = { path = "../once-hir" }
 once-ty = { path = "../once-ty" }
-once-effects = { path = "../once-effects" }
 once-rinf = { path = "../once-rinf" }
 once-onceo = { path = "../once-onceo" }
 wasmparser = "0.200"

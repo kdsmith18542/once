@@ -1,0 +1,6 @@
+fn main() -> Unit !io {
+    using f = File.open("test.txt") {
+        let x: lin Int = 5;
+        print(x);
+    }
+}

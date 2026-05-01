@@ -94,12 +94,11 @@ pub enum BackpressurePolicy {
 pub struct Channel<T> {
     pub id: ChannelId,
     pub capacity: usize,
-    pub buffer: VecDeque<T>,
+    pub buffer: Mutex<VecDeque<T>>,
     pub senders: usize,
     pub receivers: usize,
     pub backpressure_policy: BackpressurePolicy,
     pub condvar: Condvar,
-    pub mutex: Mutex<()>,
 }
 
 impl<T> Channel<T> {
@@ -107,40 +106,39 @@ impl<T> Channel<T> {
         Self {
             id,
             capacity,
-            buffer: VecDeque::new(),
+            buffer: Mutex::new(VecDeque::new()),
             senders: 0,
             receivers: 0,
             backpressure_policy,
             condvar: Condvar::new(),
-            mutex: Mutex::new(()),
         }
     }
 
-    pub fn send(&mut self, value: T) -> Result<(), RuntimeError> {
-        let mut guard = self.mutex.lock().unwrap();
+    pub fn send(&self, value: T) -> Result<(), RuntimeError> {
+        let mut buffer = self.buffer.lock().unwrap();
         
         match self.backpressure_policy {
             BackpressurePolicy::Blocking => {
-                while self.buffer.len() >= self.capacity {
-                    guard = self.condvar.wait(guard).unwrap();
+                while buffer.len() >= self.capacity {
+                    buffer = self.condvar.wait(buffer).unwrap();
                 }
-                self.buffer.push_back(value);
+                buffer.push_back(value);
                 self.condvar.notify_one();
                 Ok(())
             }
             BackpressurePolicy::Dropping => {
-                if self.buffer.len() >= self.capacity {
-                    self.buffer.pop_front();
+                if buffer.len() >= self.capacity {
+                    buffer.pop_front();
                 }
-                self.buffer.push_back(value);
+                buffer.push_back(value);
                 self.condvar.notify_one();
                 Ok(())
             }
             BackpressurePolicy::Erroring => {
-                if self.buffer.len() >= self.capacity {
+                if buffer.len() >= self.capacity {
                     Err(RuntimeError::BackpressureError("Channel full".to_string()))
                 } else {
-                    self.buffer.push_back(value);
+                    buffer.push_back(value);
                     self.condvar.notify_one();
                     Ok(())
                 }
@@ -148,14 +146,14 @@ impl<T> Channel<T> {
         }
     }
 
-    pub fn recv(&mut self) -> Result<T, RuntimeError> {
-        let mut guard = self.mutex.lock().unwrap();
+    pub fn recv(&self) -> Result<T, RuntimeError> {
+        let mut buffer = self.buffer.lock().unwrap();
         
-        while self.buffer.is_empty() {
-            guard = self.condvar.wait(guard).unwrap();
+        while buffer.is_empty() {
+            buffer = self.condvar.wait(buffer).unwrap();
         }
         
-        self.buffer.pop_front()
+        buffer.pop_front()
             .ok_or_else(|| RuntimeError::ChannelError("Channel closed".to_string()))
     }
 }
@@ -298,21 +296,15 @@ impl Scheduler {
 
     pub fn send_to_channel(&self, channel_id: ChannelId, value: Value) -> Result<(), RuntimeError> {
         if let Some(channel) = self.channels.get(&channel_id) {
-            // For now, just simulate successful send
-            // In a real implementation, we'd need proper synchronization
-            println!("Sending value to channel {}: {:?}", channel_id, value);
-            Ok(())
+            channel.send(value)
         } else {
             Err(RuntimeError::ChannelError("Channel not found".to_string()))
         }
     }
 
     pub fn recv_from_channel(&self, channel_id: ChannelId) -> Result<Value, RuntimeError> {
-        if let Some(_channel) = self.channels.get(&channel_id) {
-            // For now, just simulate successful receive
-            // In a real implementation, we'd need proper synchronization
-            println!("Receiving value from channel {}", channel_id);
-            Ok(Value::Unit)
+        if let Some(channel) = self.channels.get(&channel_id) {
+            channel.recv()
         } else {
             Err(RuntimeError::ChannelError("Channel not found".to_string()))
         }
@@ -806,6 +798,65 @@ impl fmt::Display for Runtime {
 
 }
 
+/// Global runtime instance for C-compatible exports
+use lazy_static::lazy_static;
+
+lazy_static! {
+    static ref GLOBAL_RUNTIME: Mutex<Runtime> = Mutex::new(Runtime::new());
+}
+
+/// C-compatible export: spawn a task
+/// Signature: once_runtime_spawn(func_ptr: i64, args_ptr: i64) -> task_handle: i64
+#[no_mangle]
+pub extern "C" fn once_runtime_spawn(_func_ptr: i64, _args_ptr: i64) -> i64 {
+    let mut runtime = GLOBAL_RUNTIME.lock().unwrap();
+    let handle = runtime.spawn_task("spawned".to_string(), vec![]);
+    handle.id as i64
+}
+
+/// C-compatible export: send a value to a channel
+/// Signature: once_runtime_send(channel_id: i64, value: i64) -> status: i64
+#[no_mangle]
+pub extern "C" fn once_runtime_send(channel_id: i64, value: i64) -> i64 {
+    let runtime = GLOBAL_RUNTIME.lock().unwrap();
+    let result = runtime.send_to_channel(channel_id as usize, Value::Int(value));
+    match result {
+        Ok(()) => 0,
+        Err(_) => -1,
+    }
+}
+
+/// C-compatible export: receive a value from a channel
+/// Signature: once_runtime_recv(channel_id: i64) -> value: i64
+#[no_mangle]
+pub extern "C" fn once_runtime_recv(channel_id: i64) -> i64 {
+    let runtime = GLOBAL_RUNTIME.lock().unwrap();
+    let result = runtime.recv_from_channel(channel_id as usize);
+    match result {
+        Ok(Value::Int(v)) => v,
+        Ok(_) => 0,
+        Err(_) => -1,
+    }
+}
+
+/// C-compatible export: await a task
+/// Signature: once_runtime_await(task_handle: i64) -> result: i64
+#[no_mangle]
+pub extern "C" fn once_runtime_await(task_handle: i64) -> i64 {
+    let mut runtime = GLOBAL_RUNTIME.lock().unwrap();
+    let handle = TaskHandle {
+        id: task_handle as usize,
+        status: TaskStatus::Pending,
+        result: None,
+    };
+    let result = runtime.await_task(handle);
+    match result {
+        Ok(Value::Int(v)) => v,
+        Ok(_) => 0,
+        Err(_) => -1,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -838,5 +889,23 @@ mod tests {
         let mut runtime = Runtime::new();
         let allocation_id = runtime.allocate(1024, "test_region".to_string());
         assert_eq!(allocation_id, 0);
+    }
+
+    #[test]
+    fn test_c_spawn() {
+        let handle = once_runtime_spawn(0, 0);
+        assert!(handle >= 0);
+    }
+
+    #[test]
+    fn test_c_channel_send_recv() {
+        let mut runtime = GLOBAL_RUNTIME.lock().unwrap();
+        let channel = runtime.create_channel(10, BackpressurePolicy::Blocking);
+        let channel_id = channel.id as i64;
+        drop(runtime);
+        let status = once_runtime_send(channel_id, 42);
+        assert_eq!(status, 0);
+        let value = once_runtime_recv(channel_id);
+        assert_eq!(value, 42);
     }
 }

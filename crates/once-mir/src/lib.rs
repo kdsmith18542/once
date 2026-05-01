@@ -40,13 +40,20 @@ pub enum MirOp {
     Drop { location: MirLocation },
     /// Free a region
     FreeRegion { region: Region },
-    /// Allocate in a region
-    Allocate { region: Region, size: usize },
+    /// Allocate in a region, storing the pointer in dest
+    Allocate { region: Region, size: usize, dest: MirLocation },
     /// Bounds check with proof status
     BoundsCheck { 
         index: MirLocation, 
         bound: MirLocation, 
         proven: bool 
+    },
+    /// Binary arithmetic / comparison operation
+    BinOp {
+        op: MirBinOp,
+        left: MirLocation,
+        right: MirLocation,
+        dest: MirLocation,
     },
     /// Channel send operation
     ChannelSend { 
@@ -79,6 +86,47 @@ pub enum MirOp {
     Return { value: Option<MirLocation> },
     /// Load a literal value
     LoadLiteral { value: MirValue, dest: MirLocation },
+    /// Unconditional jump to a label
+    Jump { target: usize },
+    /// Conditional branch: if condition is true, jump to true_target, else false_target
+    Branch {
+        condition: MirLocation,
+        true_target: usize,
+        false_target: usize,
+    },
+    /// Label marker for jump targets
+    Label { id: usize },
+}
+
+/// MIR binary operation types
+#[derive(Debug, Clone, PartialEq)]
+pub enum MirBinOp {
+    Add, Sub, Mul, Div,
+    Eq, Ne, Lt, Le, Gt, Ge,
+    And, Or,
+    /// Assignment (=) - maps to a move operation in MIR
+    Move,
+}
+
+impl MirBinOp {
+    pub fn from_hir(op: &HirBinaryOp) -> Self {
+        use HirBinaryOp::*;
+        match op {
+            Add => MirBinOp::Add,
+            Sub => MirBinOp::Sub,
+            Mul => MirBinOp::Mul,
+            Div => MirBinOp::Div,
+            Eq => MirBinOp::Eq,
+            Ne => MirBinOp::Ne,
+            Lt => MirBinOp::Lt,
+            Le => MirBinOp::Le,
+            Gt => MirBinOp::Gt,
+            Ge => MirBinOp::Ge,
+            And => MirBinOp::And,
+            Or => MirBinOp::Or,
+            Assign => MirBinOp::Move,
+        }
+    }
 }
 
 /// MIR location (where values are stored)
@@ -158,6 +206,7 @@ pub struct MirProgram {
 pub struct MirGenerator {
     next_local: usize,
     next_temp: usize,
+    next_label: usize,
     region_dag: Option<RegionDag>,
     errors: Vec<MirError>,
 }
@@ -167,9 +216,16 @@ impl MirGenerator {
         Self {
             next_local: 0,
             next_temp: 0,
+            next_label: 0,
             region_dag: None,
             errors: Vec::new(),
         }
+    }
+
+    fn fresh_label(&mut self) -> usize {
+        let label = self.next_label;
+        self.next_label += 1;
+        label
     }
 
     pub fn generate(&mut self, hir: &HirProgram, region_dag: RegionDag) -> Result<MirProgram, Vec<MirError>> {
@@ -194,6 +250,19 @@ impl MirGenerator {
                 HirItem::LetDecl(_) => {
                     // Global let declarations are handled differently
                 }
+                HirItem::TypeDecl(_) => {
+                    // Type declarations don't generate MIR directly
+                }
+                HirItem::TraitDecl(trait_decl) => {
+                    for method in &trait_decl.methods {
+                        functions.push(self.generate_function(method)?);
+                    }
+                }
+                HirItem::ImplBlock(impl_block) => {
+                    for method in &impl_block.methods {
+                        functions.push(self.generate_function(method)?);
+                    }
+                }
             }
         }
 
@@ -214,7 +283,7 @@ impl MirGenerator {
 
         // Generate parameter locations
         let mut params = Vec::new();
-        for (i, param) in fn_decl.params.iter().enumerate() {
+        for param in fn_decl.params.iter() {
             params.push((param.name.clone(), param.type_annotation.clone().unwrap_or(HirType::Unit)));
         }
 
@@ -224,8 +293,15 @@ impl MirGenerator {
         // Add implicit return if the last statement isn't a return
         let mut statements = body.statements.clone();
         if statements.is_empty() || !matches!(statements.last().unwrap().op, MirOp::Return { .. }) {
+            let return_type = fn_decl.return_type.clone().unwrap_or(HirType::Unit);
+            let return_value = if return_type != HirType::Unit && !statements.is_empty() {
+                // The last expression's result is in the most recently allocated temp
+                Some(MirLocation::Temp(temp_count.saturating_sub(1)))
+            } else {
+                None
+            };
             statements.push(MirStmt {
-                op: MirOp::Return { value: None },
+                op: MirOp::Return { value: return_value },
                 span: Span::new(0, 0, 0, 0),
                 region: None,
             });
@@ -238,7 +314,8 @@ impl MirGenerator {
             body: MirBlock {
                 statements,
                 region: None,
-            },            local_count,
+            },
+            local_count,
             temp_count,
         })
     }
@@ -486,7 +563,7 @@ impl MirGenerator {
                     region: None,
                 });
             }
-            HirExpr::Binary { left, op: _, right } => {
+            HirExpr::Binary { left, op, right } => {
                 // Generate operations for left and right operands
                 let left_ops = self.generate_expr(left, temp_count)?;
                 statements.extend(left_ops);
@@ -494,25 +571,290 @@ impl MirGenerator {
 
                 let right_ops = self.generate_expr(right, temp_count)?;
                 statements.extend(right_ops);
-                let _right_temp = MirLocation::Temp(*temp_count - 1);
+                let right_temp = MirLocation::Temp(*temp_count - 1);
 
                 // Create temporary for result
                 let result_temp = MirLocation::Temp(*temp_count);
                 *temp_count += 1;
 
-                // TODO: Generate binary operation
+                // Generate binary operation
                 statements.push(MirStmt {
-                    op: MirOp::Move {
-                        from: left_temp,
-                        to: result_temp,
+                    op: MirOp::BinOp {
+                        op: MirBinOp::from_hir(op),
+                        left: left_temp,
+                        right: right_temp,
+                        dest: result_temp,
                     },
                     span: Span::new(0, 0, 0, 0),
                     region: None,
                 });
             }
             HirExpr::Block(block) => {
-                let block_ops = self.generate_block(block, &mut statements, &mut 0, temp_count)?;
-                statements.extend(block_ops.statements);
+                let _block_ops = self.generate_block(block, &mut statements, &mut 0, temp_count)?;
+                // statements already extended by generate_block
+            }
+            HirExpr::If { condition, then_branch, else_branch } => {
+                // Generate condition
+                let cond_ops = self.generate_expr(condition, temp_count)?;
+                statements.extend(cond_ops);
+                let cond_temp = MirLocation::Temp(*temp_count - 1);
+
+                // Labels
+                let then_label = self.fresh_label();
+                let else_label = self.fresh_label();
+                let end_label = self.fresh_label();
+
+                // Result temp
+                let result_temp = MirLocation::Temp(*temp_count);
+                *temp_count += 1;
+
+                // Branch
+                statements.push(MirStmt {
+                    op: MirOp::Branch {
+                        condition: cond_temp,
+                        true_target: then_label,
+                        false_target: else_label,
+                    },
+                    span: Span::new(0, 0, 0, 0),
+                    region: None,
+                });
+
+                // Then block
+                statements.push(MirStmt {
+                    op: MirOp::Label { id: then_label },
+                    span: Span::new(0, 0, 0, 0),
+                    region: None,
+                });
+                let _then_ops = self.generate_block(then_branch, &mut statements, &mut 0, temp_count)?;
+                // statements already extended by generate_block
+                // Move last value to result
+                statements.push(MirStmt {
+                    op: MirOp::Move {
+                        from: MirLocation::Temp(*temp_count - 1),
+                        to: result_temp.clone(),
+                    },
+                    span: Span::new(0, 0, 0, 0),
+                    region: None,
+                });
+                statements.push(MirStmt {
+                    op: MirOp::Jump { target: end_label },
+                    span: Span::new(0, 0, 0, 0),
+                    region: None,
+                });
+
+                // Else block
+                statements.push(MirStmt {
+                    op: MirOp::Label { id: else_label },
+                    span: Span::new(0, 0, 0, 0),
+                    region: None,
+                });
+                if let Some(else_expr) = else_branch {
+                    let else_ops = self.generate_expr(else_expr, temp_count)?;
+                    statements.extend(else_ops);
+                    statements.push(MirStmt {
+                        op: MirOp::Move {
+                            from: MirLocation::Temp(*temp_count - 1),
+                            to: result_temp.clone(),
+                        },
+                        span: Span::new(0, 0, 0, 0),
+                        region: None,
+                    });
+                } else {
+                    // No else branch: load Unit
+                    statements.push(MirStmt {
+                        op: MirOp::LoadLiteral {
+                            value: MirValue::Unit,
+                            dest: result_temp.clone(),
+                        },
+                        span: Span::new(0, 0, 0, 0),
+                        region: None,
+                    });
+                }
+                statements.push(MirStmt {
+                    op: MirOp::Jump { target: end_label },
+                    span: Span::new(0, 0, 0, 0),
+                    region: None,
+                });
+
+                // End
+                statements.push(MirStmt {
+                    op: MirOp::Label { id: end_label },
+                    span: Span::new(0, 0, 0, 0),
+                    region: None,
+                });
+            }
+            HirExpr::Match { expr, arms } => {
+                // Generate scrutinee
+                let scrutinee_ops = self.generate_expr(expr, temp_count)?;
+                statements.extend(scrutinee_ops);
+                let scrutinee_temp = MirLocation::Temp(*temp_count - 1);
+
+                let end_label = self.fresh_label();
+                let result_temp = MirLocation::Temp(*temp_count);
+                *temp_count += 1;
+
+                for (_pattern, arm_expr) in arms {
+                    let arm_label = self.fresh_label();
+                    let next_label = self.fresh_label();
+
+                    // TODO: Generate pattern comparison
+                    // For now, always branch based on a placeholder condition
+                    statements.push(MirStmt {
+                        op: MirOp::Branch {
+                            condition: scrutinee_temp.clone(),
+                            true_target: arm_label,
+                            false_target: next_label,
+                        },
+                        span: Span::new(0, 0, 0, 0),
+                        region: None,
+                    });
+
+                    // Arm body
+                    statements.push(MirStmt {
+                        op: MirOp::Label { id: arm_label },
+                        span: Span::new(0, 0, 0, 0),
+                        region: None,
+                    });
+                    let arm_ops = self.generate_expr(arm_expr, temp_count)?;
+                    statements.extend(arm_ops);
+                    statements.push(MirStmt {
+                        op: MirOp::Move {
+                            from: MirLocation::Temp(*temp_count - 1),
+                            to: result_temp.clone(),
+                        },
+                        span: Span::new(0, 0, 0, 0),
+                        region: None,
+                    });
+                    statements.push(MirStmt {
+                        op: MirOp::Jump { target: end_label },
+                        span: Span::new(0, 0, 0, 0),
+                        region: None,
+                    });
+
+                    // Next arm
+                    statements.push(MirStmt {
+                        op: MirOp::Label { id: next_label },
+                        span: Span::new(0, 0, 0, 0),
+                        region: None,
+                    });
+                }
+
+                // End label
+                statements.push(MirStmt {
+                    op: MirOp::Label { id: end_label },
+                    span: Span::new(0, 0, 0, 0),
+                    region: None,
+                });
+            }
+            HirExpr::For { item, collection, body } => {
+                // Generate collection
+                let coll_ops = self.generate_expr(collection, temp_count)?;
+                statements.extend(coll_ops);
+                let _coll_temp = MirLocation::Temp(*temp_count - 1);
+
+                // Loop labels
+                let loop_start = self.fresh_label();
+                let loop_body = self.fresh_label();
+                let loop_end = self.fresh_label();
+
+                // Result temp (Unit by default for loops)
+                let result_temp = MirLocation::Temp(*temp_count);
+                *temp_count += 1;
+
+                // Jump to start
+                statements.push(MirStmt {
+                    op: MirOp::Jump { target: loop_start },
+                    span: Span::new(0, 0, 0, 0),
+                    region: None,
+                });
+
+                // Loop start: increment/condition check (TODO: proper iterator)
+                statements.push(MirStmt {
+                    op: MirOp::Label { id: loop_start },
+                    span: Span::new(0, 0, 0, 0),
+                    region: None,
+                });
+                // Branch to body (always true for now; TODO: proper condition)
+                statements.push(MirStmt {
+                    op: MirOp::Branch {
+                        condition: MirLocation::Temp(0),
+                        true_target: loop_body,
+                        false_target: loop_end,
+                    },
+                    span: Span::new(0, 0, 0, 0),
+                    region: None,
+                });
+
+                // Loop body
+                statements.push(MirStmt {
+                    op: MirOp::Label { id: loop_body },
+                    span: Span::new(0, 0, 0, 0),
+                    region: None,
+                });
+                let _body_ops = self.generate_block(body, &mut statements, &mut 0, temp_count)?;
+                // Register item variable
+                let _ = item;
+                // Jump back to start
+                statements.push(MirStmt {
+                    op: MirOp::Jump { target: loop_start },
+                    span: Span::new(0, 0, 0, 0),
+                    region: None,
+                });
+
+                // Loop end
+                statements.push(MirStmt {
+                    op: MirOp::Label { id: loop_end },
+                    span: Span::new(0, 0, 0, 0),
+                    region: None,
+                });
+                // Load Unit as loop result
+                statements.push(MirStmt {
+                    op: MirOp::LoadLiteral {
+                        value: MirValue::Unit,
+                        dest: result_temp,
+                    },
+                    span: Span::new(0, 0, 0, 0),
+                    region: None,
+                });
+            }
+            HirExpr::Index { base, index } => {
+                // Generate operations for base and index
+                let base_ops = self.generate_expr(base, temp_count)?;
+                statements.extend(base_ops);
+                let base_temp = MirLocation::Temp(*temp_count - 1);
+
+                let index_ops = self.generate_expr(index, temp_count)?;
+                statements.extend(index_ops);
+                let index_temp = MirLocation::Temp(*temp_count - 1);
+
+                // Emit bounds check
+                statements.push(MirStmt {
+                    op: MirOp::BoundsCheck {
+                        index: index_temp.clone(),
+                        bound: base_temp.clone(),
+                        proven: false,
+                    },
+                    span: Span::new(0, 0, 0, 0),
+                    region: None,
+                });
+
+                // Create temporary for result
+                let result_temp = MirLocation::Temp(*temp_count);
+                *temp_count += 1;
+
+                // Index access: move the indexed element to result
+                statements.push(MirStmt {
+                    op: MirOp::Move {
+                        from: MirLocation::Index { base: Box::new(base_temp), index: Box::new(index_temp) },
+                        to: result_temp,
+                    },
+                    span: Span::new(0, 0, 0, 0),
+                    region: None,
+                });
+            }
+            HirExpr::Try(inner) => {
+                let inner_ops = self.generate_expr(inner, temp_count)?;
+                statements.extend(inner_ops);
             }
         }
 
@@ -523,10 +865,21 @@ impl MirGenerator {
     pub fn add_region_frees(&mut self, mir: &mut MirProgram) -> Result<(), Vec<MirError>> {
         if let Some(ref dag) = self.region_dag {
             for (region, _free_point) in &dag.free_points {
-                // Find the appropriate function and insert free operation
+                // Associate region with functions
+                // Regions named "fn_<name>" belong to function <name>
+                let target_fn = if region.name.starts_with("fn_") {
+                    Some(region.name.strip_prefix("fn_").unwrap().to_string())
+                } else {
+                    None
+                };
+
                 for function in &mut mir.functions {
-                    if function.name.contains(&region.name) {
-                        // Insert free operation at the calculated point
+                    let should_insert = match &target_fn {
+                        Some(name) => function.name == *name,
+                        None => true, // Global regions go in all functions
+                    };
+
+                    if should_insert {
                         let free_stmt = MirStmt {
                             op: MirOp::FreeRegion {
                                 region: region.clone(),
@@ -534,8 +887,6 @@ impl MirGenerator {
                             span: Span::new(0, 0, 0, 0),
                             region: Some(region.clone()),
                         };
-
-                        // TODO: Insert at the correct position based on free_point
                         function.body.statements.push(free_stmt);
                     }
                 }

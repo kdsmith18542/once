@@ -433,10 +433,10 @@ impl CodeGenerator {
                     region: region.clone(),
                 });
             }
-            MirOp::Allocate { region: _, size } => {
-                let dest = self.get_temp_register();
+            MirOp::Allocate { region: _, size, dest } => {
+                let dest_reg = self.get_register(dest);
                 instructions.push(Instruction::Allocate {
-                    dest,
+                    dest: dest_reg,
                     size: *size,
                     alignment: 8,
                 });
@@ -449,6 +449,26 @@ impl CodeGenerator {
                     bound: bound_reg,
                     proven: *proven,
                 });
+            }
+            MirOp::BinOp { op, left, right, dest } => {
+                let left_reg = self.get_register(left);
+                let right_reg = self.get_register(right);
+                let dest_reg = self.get_register(dest);
+                let ty = Type::Int(IntWidth::I64); // TODO: Use actual type
+                let instr = match op {
+                    once_mir::MirBinOp::Add => Instruction::Add { dest: dest_reg, left: left_reg, right: right_reg, ty },
+                    once_mir::MirBinOp::Sub => Instruction::Sub { dest: dest_reg, left: left_reg, right: right_reg, ty },
+                    once_mir::MirBinOp::Mul => Instruction::Mul { dest: dest_reg, left: left_reg, right: right_reg, ty },
+                    once_mir::MirBinOp::Div => Instruction::Div { dest: dest_reg, left: left_reg, right: right_reg, ty },
+                    once_mir::MirBinOp::Eq => Instruction::Eq { dest: dest_reg, left: left_reg, right: right_reg, ty },
+                    once_mir::MirBinOp::Ne => Instruction::Ne { dest: dest_reg, left: left_reg, right: right_reg, ty },
+                    once_mir::MirBinOp::Lt => Instruction::Lt { dest: dest_reg, left: left_reg, right: right_reg, ty },
+                    once_mir::MirBinOp::Le => Instruction::Le { dest: dest_reg, left: left_reg, right: right_reg, ty },
+                    once_mir::MirBinOp::Gt => Instruction::Gt { dest: dest_reg, left: left_reg, right: right_reg, ty },
+                    once_mir::MirBinOp::Ge => Instruction::Ge { dest: dest_reg, left: left_reg, right: right_reg, ty },
+                    once_mir::MirBinOp::And | once_mir::MirBinOp::Or | once_mir::MirBinOp::Move => Instruction::Move { dest: dest_reg, src: left_reg, ty },
+                };
+                instructions.push(instr);
             }
             MirOp::ChannelSend { channel, value } => {
                 let channel_reg = self.get_register(channel);
@@ -539,6 +559,24 @@ impl CodeGenerator {
             MirOp::Return { value } => {
                 let value_reg = value.as_ref().map(|v| self.get_register(v));
                 instructions.push(Instruction::Return { value: value_reg });
+            }
+            MirOp::Jump { target } => {
+                instructions.push(Instruction::Jump {
+                    label: format!("label_{}", target),
+                });
+            }
+            MirOp::Branch { condition, true_target, false_target } => {
+                let cond_reg = self.get_register(condition);
+                instructions.push(Instruction::Branch {
+                    condition: cond_reg,
+                    true_label: format!("label_{}", true_target),
+                    false_label: format!("label_{}", false_target),
+                });
+            }
+            MirOp::Label { id } => {
+                instructions.push(Instruction::Label {
+                    name: format!("label_{}", id),
+                });
             }
         }
 

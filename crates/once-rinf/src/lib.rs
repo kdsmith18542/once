@@ -123,10 +123,10 @@ impl RegionSolver {
         self.generate_constraints(hir)?;
         
         // Solve constraints to build region DAG
-        let dag = self.build_region_dag()?;
+        let mut dag = self.build_region_dag()?;
         
         // Place free points optimally
-        self.place_free_points(&mut dag.clone())?;
+        self.place_free_points(&mut dag)?;
         
         if self.errors.is_empty() {
             Ok(dag)
@@ -153,6 +153,21 @@ impl RegionSolver {
             }
             HirItem::LetDecl(_) => {
                 // Global let declarations don't need region constraints
+            }
+            HirItem::TypeDecl(_) => {
+                // Type declarations don't need region constraints
+            }
+            HirItem::TraitDecl(trait_decl) => {
+                for method in &trait_decl.methods {
+                    let primary_region = self.create_region(&format!("trait_{}_{}", trait_decl.name, method.name), true);
+                    self.generate_block_constraints(&method.body, primary_region)?;
+                }
+            }
+            HirItem::ImplBlock(impl_block) => {
+                for method in &impl_block.methods {
+                    let primary_region = self.create_region(&format!("impl_{}", method.name), true);
+                    self.generate_block_constraints(&method.body, primary_region)?;
+                }
             }
         }
         Ok(())
@@ -242,6 +257,16 @@ impl RegionSolver {
                 });
                 
                 self.generate_block_constraints(block, subregion)?;
+            }
+            HirExpr::If { .. } | HirExpr::Match { .. } | HirExpr::For { .. } => {
+                // TODO: Phase 3
+            }
+            HirExpr::Index { base, index } => {
+                self.generate_expr_constraints(base, region.clone())?;
+                self.generate_expr_constraints(index, region)?;
+            }
+            HirExpr::Try(inner) => {
+                self.generate_expr_constraints(inner, region)?;
             }
         }
         Ok(())

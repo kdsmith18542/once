@@ -9,7 +9,6 @@ members = [
     "crates/once-parse",
     "crates/once-hir",
     "crates/once-ty",
-    "crates/once-effects",
     "crates/once-linear",
     "crates/once-rinf",
     "crates/once-mir",
@@ -70,8 +69,10 @@ once-lex = { path = "crates/once-lex" }
 once-parse = { path = "crates/once-parse" }
 once-hir = { path = "crates/once-hir" }
 once-ty = { path = "crates/once-ty" }
-once-effects = { path = "crates/once-effects" }
 once-linear = { path = "crates/once-linear" }
 once-rinf = { path = "crates/once-rinf" }
 once-mir = { path = "crates/once-mir" }
 once-codegen = { path = "crates/once-codegen" }
+once-std = { path = "crates/once-std" }
+once-runtime = { path = "crates/once-runtime" }
+once-build = { path = "crates/once-build" }

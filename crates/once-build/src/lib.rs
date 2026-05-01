@@ -11,6 +11,7 @@
 //! - Parallel execution
 
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -134,6 +135,133 @@ impl Default for BuildConfig {
     }
 }
 
+/// Content-addressed build store.
+///
+/// Artifacts are stored under `store_dir/<hash>/` where `hash` is derived
+/// from the deterministic contents of all inputs (source files, dependency
+/// names, compiler flags).  This makes builds hermetic and reproducible:
+/// identical inputs always produce the same hash, and cached outputs can be
+/// retrieved without rebuilding.
+pub struct BuildStore {
+    pub store_dir: PathBuf,
+}
+
+impl BuildStore {
+    pub fn new(store_dir: PathBuf) -> Self {
+        let _ = fs::create_dir_all(&store_dir);
+        Self { store_dir }
+    }
+
+    /// Compute a stable content hash for a target.
+    ///
+    /// The hash incorporates, in deterministic order:
+    /// - the target name
+    /// - the contents of every source file
+    /// - the names of every dependency (transitive hashes are resolved
+    ///   separately by the caller)
+    pub fn compute_hash(&self, target: &BuildTarget) -> Result<String, BuildError> {
+        let mut hasher = StableHasher::new();
+        hasher.write(target.name.as_bytes());
+        hasher.write(target.version.as_bytes());
+        hasher.write(target.build_type.to_string().as_bytes());
+
+        // Hash source file contents in sorted order for determinism
+        let mut sources: Vec<_> = target.sources.iter().cloned().collect();
+        sources.sort();
+        for path in &sources {
+            let content = fs::read(path)
+                .map_err(|e| BuildError::FileError(format!("Failed to read {}: {}", path.display(), e)))?;
+            hasher.write(path.to_string_lossy().as_bytes());
+            hasher.write(&content);
+        }
+
+        // Hash direct dependency names in sorted order
+        let mut deps = target.dependencies.clone();
+        deps.sort();
+        for dep in &deps {
+            hasher.write(dep.as_bytes());
+        }
+
+        Ok(hasher.finish_hex())
+    }
+
+    /// Return the store path for a given content hash.
+    pub fn artifact_path(&self, hash: &str, artifact_name: &str) -> PathBuf {
+        self.store_dir.join(hash).join(artifact_name)
+    }
+
+    /// Check whether an artifact with the given hash already exists.
+    pub fn has_artifact(&self, hash: &str, artifact_name: &str) -> bool {
+        self.artifact_path(hash, artifact_name).exists()
+    }
+
+    /// Store a built artifact under its content hash.
+    pub fn store_artifact(&self, hash: &str, artifact_name: &str, source: &Path) -> Result<PathBuf, BuildError> {
+        let dest_dir = self.store_dir.join(hash);
+        fs::create_dir_all(&dest_dir)
+            .map_err(|e| BuildError::CacheError(format!("Failed to create store dir: {}", e)))?;
+        let dest = dest_dir.join(artifact_name);
+        fs::copy(source, &dest)
+            .map_err(|e| BuildError::CacheError(format!("Failed to copy artifact: {}", e)))?;
+        Ok(dest)
+    }
+
+    /// Retrieve a cached artifact path if it exists.
+    pub fn retrieve_artifact(&self, hash: &str, artifact_name: &str) -> Option<PathBuf> {
+        let path = self.artifact_path(hash, artifact_name);
+        if path.exists() { Some(path) } else { None }
+    }
+}
+
+/// Simple stable hasher (FNV-1a variant) that produces identical results
+/// across platforms and Rust versions for the same byte sequence.
+pub struct StableHasher {
+    state: u64,
+}
+
+impl StableHasher {
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x00000100000001b3;
+
+    pub fn new() -> Self {
+        Self { state: Self::FNV_OFFSET }
+    }
+
+    pub fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.state ^= b as u64;
+            self.state = self.state.wrapping_mul(Self::FNV_PRIME);
+        }
+    }
+
+    pub fn finish_hex(&self) -> String {
+        format!("{:016x}", self.state)
+    }
+}
+
+impl fmt::Display for BuildType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            BuildType::Binary => write!(f, "binary"),
+            BuildType::Library => write!(f, "library"),
+            BuildType::Test => write!(f, "test"),
+            BuildType::Example => write!(f, "example"),
+        }
+    }
+}
+
+impl BuildType {
+    /// File extension used for stored artifacts of this build type.
+    pub fn artifact_extension(&self) -> &'static str {
+        match self {
+            BuildType::Binary => "exe",
+            BuildType::Library => "lib",
+            BuildType::Test => "test",
+            BuildType::Example => "example",
+        }
+    }
+}
+
 /// FFI security configuration
 #[derive(Debug, Clone)]
 pub struct FfiSecurityConfig {
@@ -169,6 +297,90 @@ pub struct FfiSecurityChecker {
     pub fuzz_tests: HashSet<String>,
 }
 
+/// AI solver integration hooks
+///
+/// Provides an extension point for external AI solvers to synthesize
+/// `goal` declarations into concrete Once implementations.
+pub mod ai {
+    use super::*;
+
+    /// Trait for AI-powered goal synthesizers.
+    pub trait AiSolver {
+        /// Synthesize an implementation for a named goal given its signature
+        /// description and optional constraints.
+        ///
+        /// Returns Once source code that implements the goal, or an error
+        /// if synthesis fails.
+        fn synthesize(&self, goal_name: &str, params: &[String], return_type: &str, constraints: &[String]) -> Result<String, BuildError>;
+    }
+
+    /// Stub AI solver that returns placeholder implementations.
+    ///
+    /// In a production build this would be replaced by a call to an
+    /// external neural-symbolic solver or LLM-based synthesizer.
+    pub struct StubAiSolver;
+
+    impl AiSolver for StubAiSolver {
+        fn synthesize(&self, goal_name: &str, _params: &[String], return_type: &str, _constraints: &[String]) -> Result<String, BuildError> {
+            // Produce a minimal placeholder function body so the goal
+            // compiles as a regular Once function.
+            let body = match return_type {
+                "Int" => "0",
+                "Bool" => "false",
+                "Float" => "0.0",
+                "Str" => "\"\"",
+                "Unit" => "()",
+                _ => "()",
+            };
+            Ok(format!("fn {}() -> {} {{ {} }}", goal_name, return_type, body))
+        }
+    }
+
+    /// Goal synthesizer that manages AI solver lifecycle.
+    pub struct GoalSynthesizer {
+        pub solver: Box<dyn AiSolver>,
+        pub synthesized_goals: HashMap<String, String>,
+    }
+
+    impl GoalSynthesizer {
+        pub fn new() -> Self {
+            Self {
+                solver: Box::new(StubAiSolver),
+                synthesized_goals: HashMap::new(),
+            }
+        }
+
+        pub fn with_solver(solver: Box<dyn AiSolver>) -> Self {
+            Self {
+                solver,
+                synthesized_goals: HashMap::new(),
+            }
+        }
+
+        /// Synthesize a goal and cache the result.
+        pub fn synthesize_goal(
+            &mut self,
+            name: &str,
+            params: &[String],
+            return_type: &str,
+            constraints: &[String],
+        ) -> Result<String, BuildError> {
+            if let Some(cached) = self.synthesized_goals.get(name) {
+                return Ok(cached.clone());
+            }
+            let source = self.solver.synthesize(name, params, return_type, constraints)?;
+            self.synthesized_goals.insert(name.to_string(), source.clone());
+            Ok(source)
+        }
+    }
+
+    impl Default for GoalSynthesizer {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+}
+
 /// Build tool
 pub struct BuildTool {
     pub config: BuildConfig,
@@ -176,16 +388,21 @@ pub struct BuildTool {
     pub build_graph: HashMap<String, BuildNode>,
     pub build_order: Vec<String>,
     pub ffi_checker: FfiSecurityChecker,
+    pub store: BuildStore,
+    pub goal_synthesizer: ai::GoalSynthesizer,
 }
 
 impl BuildTool {
     pub fn new(config: BuildConfig) -> Self {
+        let store_dir = config.cache_dir.join("cas");
         Self {
             config,
             cache: HashMap::new(),
             build_graph: HashMap::new(),
             build_order: Vec::new(),
             ffi_checker: FfiSecurityChecker::new(),
+            store: BuildStore::new(store_dir),
+            goal_synthesizer: ai::GoalSynthesizer::new(),
         }
     }
 
@@ -568,23 +785,26 @@ impl BuildTool {
         Ok(())
     }
 
-    /// Check if target is cached
+    /// Check if target is cached using content-addressed store.
     fn is_cached(&self, target_name: &str) -> Result<bool, BuildError> {
-        if let Some(cache_entry) = self.cache.get(target_name) {
-            // Check if output file exists and is newer than source
-            if cache_entry.output_path.exists() {
-                let source_path = &self.build_graph[target_name].target.path;
-                if let Ok(source_metadata) = fs::metadata(source_path) {
-                    if let Ok(output_metadata) = fs::metadata(&cache_entry.output_path) {
-                        if output_metadata.modified().map_err(|e| BuildError::FileError(format!("Failed to get output modified time: {}", e)))?
-                            > source_metadata.modified().map_err(|e| BuildError::FileError(format!("Failed to get source modified time: {}", e)))? {
-                            return Ok(true);
-                        }
-                    }
-                }
+        if let Some(node) = self.build_graph.get(target_name) {
+            let hash = self.store.compute_hash(&node.target)?;
+            let artifact_name = format!("{}.{}", node.target.name, node.target.build_type.artifact_extension());
+            if self.store.has_artifact(&hash, &artifact_name) {
+                return Ok(true);
             }
         }
         Ok(false)
+    }
+
+    /// Retrieve a cached artifact path for a target.
+    fn get_cached_artifact(&self, target_name: &str) -> Result<Option<PathBuf>, BuildError> {
+        if let Some(node) = self.build_graph.get(target_name) {
+            let hash = self.store.compute_hash(&node.target)?;
+            let artifact_name = format!("{}.{}", node.target.name, node.target.build_type.artifact_extension());
+            return Ok(self.store.retrieve_artifact(&hash, &artifact_name));
+        }
+        Ok(None)
     }
 
     /// Load build cache

@@ -11,7 +11,7 @@ use std::path::Path;
 #[test]
 fn test_hello_world_compilation() {
     let output = Command::new("cargo")
-        .args(&["run", "--bin", "once", "--", "build", "--input", "examples/hello_world.onc", "--output", "test_hello_world.o"])
+        .args(&["run", "-p", "once-cli", "--bin", "once", "--",  "build", "--input", "examples/hello_world.onc", "--output", "test_hello_world.o"])
         .output()
         .expect("Failed to run once compiler");
 
@@ -28,7 +28,7 @@ fn test_hello_world_compilation() {
 #[test]
 fn test_multi_function_compilation() {
     let output = Command::new("cargo")
-        .args(&["run", "--bin", "once", "--", "build", "--input", "examples/simple_async.onc", "--output", "test_simple_async.o"])
+        .args(&["run", "-p", "once-cli", "--bin", "once", "--",  "build", "--input", "examples/simple_async.onc", "--output", "test_simple_async.o"])
         .output()
         .expect("Failed to run once compiler");
 
@@ -49,7 +49,7 @@ fn test_syntax_error_handling() {
     fs::write("test_syntax_error.onc", invalid_code).expect("Failed to write test file");
 
     let output = Command::new("cargo")
-        .args(&["run", "--bin", "once", "--", "build", "--input", "test_syntax_error.onc", "--output", "test_syntax_error.o"])
+        .args(&["run", "-p", "once-cli", "--bin", "once", "--",  "build", "--input", "test_syntax_error.onc", "--output", "test_syntax_error.o"])
         .output()
         .expect("Failed to run once compiler");
 
@@ -69,7 +69,7 @@ fn test_type_checking() {
     fs::write("test_type_error.onc", type_error_code).expect("Failed to write test file");
 
     let output = Command::new("cargo")
-        .args(&["run", "--bin", "once", "--", "build", "--input", "test_type_error.onc", "--output", "test_type_error.o"])
+        .args(&["run", "-p", "once-cli", "--bin", "once", "--",  "build", "--input", "test_type_error.onc", "--output", "test_type_error.o"])
         .output()
         .expect("Failed to run once compiler");
 
@@ -85,7 +85,7 @@ fn test_type_checking() {
 #[test]
 fn test_help_command() {
     let output = Command::new("cargo")
-        .args(&["run", "--bin", "once", "--", "help"])
+        .args(&["run", "-p", "once-cli", "--bin", "once", "--",  "help"])
         .output()
         .expect("Failed to run once compiler");
 
@@ -97,7 +97,7 @@ fn test_help_command() {
 #[test]
 fn test_build_help() {
     let output = Command::new("cargo")
-        .args(&["run", "--bin", "once", "--", "build", "--help"])
+        .args(&["run", "-p", "once-cli", "--bin", "once", "--",  "build", "--help"])
         .output()
         .expect("Failed to run once compiler");
 
@@ -110,7 +110,7 @@ fn test_build_help() {
 #[test]
 fn test_parse_stage() {
     let output = Command::new("cargo")
-        .args(&["run", "--bin", "once", "--", "parse", "--input", "examples/hello_world.onc"])
+        .args(&["run", "-p", "once-cli", "--bin", "once", "--",  "parse", "--input", "examples/hello_world.onc"])
         .output()
         .expect("Failed to run once compiler");
 
@@ -120,7 +120,7 @@ fn test_parse_stage() {
 #[test]
 fn test_hir_stage() {
     let output = Command::new("cargo")
-        .args(&["run", "--bin", "once", "--", "hir", "--input", "examples/hello_world.onc"])
+        .args(&["run", "-p", "once-cli", "--bin", "once", "--",  "hir", "--input", "examples/hello_world.onc"])
         .output()
         .expect("Failed to run once compiler");
 
@@ -130,7 +130,7 @@ fn test_hir_stage() {
 #[test]
 fn test_typecheck_stage() {
     let output = Command::new("cargo")
-        .args(&["run", "--bin", "once", "--", "typecheck", "--input", "examples/hello_world.onc"])
+        .args(&["run", "-p", "once-cli", "--bin", "once", "--",  "typecheck", "--input", "examples/hello_world.onc"])
         .output()
         .expect("Failed to run once compiler");
 
@@ -140,7 +140,7 @@ fn test_typecheck_stage() {
 #[test]
 fn test_effects_stage() {
     let output = Command::new("cargo")
-        .args(&["run", "--bin", "once", "--", "effects", "--input", "examples/hello_world.onc"])
+        .args(&["run", "-p", "once-cli", "--bin", "once", "--",  "effects", "--input", "examples/hello_world.onc"])
         .output()
         .expect("Failed to run once compiler");
 
@@ -150,7 +150,7 @@ fn test_effects_stage() {
 #[test]
 fn test_linearity_stage() {
     let output = Command::new("cargo")
-        .args(&["run", "--bin", "once", "--", "linearity", "--input", "examples/hello_world.onc"])
+        .args(&["run", "-p", "once-cli", "--bin", "once", "--",  "linearity", "--input", "examples/hello_world.onc"])
         .output()
         .expect("Failed to run once compiler");
 
@@ -160,7 +160,7 @@ fn test_linearity_stage() {
 #[test]
 fn test_regions_stage() {
     let output = Command::new("cargo")
-        .args(&["run", "--bin", "once", "--", "regions", "--input", "examples/hello_world.onc"])
+        .args(&["run", "-p", "once-cli", "--bin", "once", "--",  "regions", "--input", "examples/hello_world.onc"])
         .output()
         .expect("Failed to run once compiler");
 
@@ -170,7 +170,7 @@ fn test_regions_stage() {
 #[test]
 fn test_mir_stage() {
     let output = Command::new("cargo")
-        .args(&["run", "--bin", "once", "--", "mir", "--input", "examples/hello_world.onc"])
+        .args(&["run", "-p", "once-cli", "--bin", "once", "--",  "mir", "--input", "examples/hello_world.onc"])
         .output()
         .expect("Failed to run once compiler");
 
@@ -180,7 +180,7 @@ fn test_mir_stage() {
 #[test]
 fn test_codegen_stage() {
     let output = Command::new("cargo")
-        .args(&["run", "--bin", "once", "--", "codegen", "--input", "examples/hello_world.onc"])
+        .args(&["run", "-p", "once-cli", "--bin", "once", "--",  "codegen", "--input", "examples/hello_world.onc"])
         .output()
         .expect("Failed to run once compiler");
 
@@ -191,7 +191,7 @@ fn test_codegen_stage() {
 #[test]
 fn test_explain_regions() {
     let output = Command::new("cargo")
-        .args(&["run", "--bin", "once", "--", "explain", "regions", "examples/hello_world.onc"])
+        .args(&["run", "-p", "once-cli", "--bin", "once", "--",  "explain", "regions", "examples/hello_world.onc"])
         .output()
         .expect("Failed to run once compiler");
 
@@ -201,7 +201,7 @@ fn test_explain_regions() {
 #[test]
 fn test_explain_effects() {
     let output = Command::new("cargo")
-        .args(&["run", "--bin", "once", "--", "explain", "effects", "examples/hello_world.onc"])
+        .args(&["run", "-p", "once-cli", "--bin", "once", "--",  "explain", "effects", "examples/hello_world.onc"])
         .output()
         .expect("Failed to run once compiler");
 
@@ -211,7 +211,7 @@ fn test_explain_effects() {
 #[test]
 fn test_explain_linearity() {
     let output = Command::new("cargo")
-        .args(&["run", "--bin", "once", "--", "explain", "linearity", "examples/hello_world.onc"])
+        .args(&["run", "-p", "once-cli", "--bin", "once", "--",  "explain", "linearity", "examples/hello_world.onc"])
         .output()
         .expect("Failed to run once compiler");
 
@@ -222,7 +222,7 @@ fn test_explain_linearity() {
 #[test]
 fn test_lsp_server() {
     let mut child = Command::new("cargo")
-        .args(&["run", "--bin", "once", "--", "lsp", "--stdio"])
+        .args(&["run", "-p", "once-cli", "--bin", "once", "--",  "lsp", "--stdio"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

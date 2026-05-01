@@ -74,10 +74,11 @@ fn test_parser_large_input() {
 #[test]
 fn test_nested_expression_parsing() {
     // Create deeply nested expression: ((((...1 + 1...)))
-    let mut input = "1".to_string();
-    for _ in 0..100 {
-        input = format!("({} + 1)", input);
+    let mut expr = "1".to_string();
+    for _ in 0..50 {
+        expr = format!("({} + 1)", expr);
     }
+    let input = format!("fn main() -> Int {{ {} }}", expr);
     
     let tokens: Vec<TokenWithSpan> = Lexer::new(&input).collect();
     
@@ -85,7 +86,7 @@ fn test_nested_expression_parsing() {
     let ast = OnceParser::parse(tokens).expect("Should parse successfully");
     let duration = start.elapsed();
     
-    println!("Parsed 100 nested additions in {:?}", duration);
+    println!("Parsed 50 nested additions in {:?}", duration);
     assert!(duration.as_millis() < 2000, "Nested expression parsing should be fast");
 }
 

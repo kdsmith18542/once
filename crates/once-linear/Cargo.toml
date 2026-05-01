@@ -7,6 +7,5 @@ description = "Linear type checker for the Once language"
 
 [dependencies]
 once-hir = { path = "../once-hir" }
-once-ty = { path = "../once-ty" }
 once-lex = { path = "../once-lex" }
 thiserror = { workspace = true }

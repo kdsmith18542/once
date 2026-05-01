@@ -1,0 +1,4 @@
+fn main() -> Unit {
+    let x: lin Int = 5;
+    print(x);
+}

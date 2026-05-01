@@ -204,7 +204,7 @@ fn test_parse_let_statement() {
 /// Test parse if expression
 #[test]
 fn test_parse_if_expression() {
-    let input = "if x > 0 { 1 } else { 0 }";
+    let input = "fn main() -> Int { if x > 0 { 1 } else { 0 } }";
     let tokens: Vec<TokenWithSpan> = Lexer::new(input).collect();
     let result = OnceParser::parse(tokens);
     assert!(result.is_ok());
@@ -213,7 +213,7 @@ fn test_parse_if_expression() {
 /// Test parse match expression
 #[test]
 fn test_parse_match_expression() {
-    let input = "match x { 1 => 10, _ => 0 }";
+    let input = "fn main() -> Int { match x { 1 => 10, _ => 0 } }";
     let tokens: Vec<TokenWithSpan> = Lexer::new(input).collect();
     let result = OnceParser::parse(tokens);
     assert!(result.is_ok());

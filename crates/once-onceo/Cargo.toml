@@ -6,7 +6,6 @@ edition = "2021"
 [dependencies]
 once-hir = { path = "../once-hir" }
 once-ty = { path = "../once-ty" }
-once-effects = { path = "../once-effects" }
 once-rinf = { path = "../once-rinf" }
 serde = { version = "1.0", features = ["derive"] }
 thiserror = "1.0"

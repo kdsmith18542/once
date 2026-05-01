@@ -14,7 +14,6 @@ once-lex = { path = "../once-lex" }
 once-parse = { path = "../once-parse" }
 once-hir = { path = "../once-hir" }
 once-ty = { path = "../once-ty" }
-once-effects = { path = "../once-effects" }
 once-linear = { path = "../once-linear" }
 once-rinf = { path = "../once-rinf" }
 once-mir = { path = "../once-mir" }

@@ -8,19 +8,20 @@
 //! - Resource management
 
 use once_hir::*;
-use once_ty::{Type, TypeVar, Region};
+use super::{Type, SourceSpan};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use thiserror::Error;
 
-/// Effect system errors
+
+/// Effect system errors with optional source location
 #[derive(Error, Debug, Clone)]
 pub enum EffectError {
     #[error("Effect mismatch: expected {expected}, found {found}")]
-    EffectMismatch { expected: String, found: String },
+    EffectMismatch { expected: String, found: String, span: Option<SourceSpan> },
     
-    #[error("Unhandled effect: {0}")]
-    UnhandledEffect(String),
+    #[error("Unhandled effect: {name}")]
+    UnhandledEffect { name: String, span: Option<SourceSpan> },
     
     #[error("Effect row constraint unsatisfiable: {0}")]
     UnsatisfiableConstraint(String),
@@ -30,6 +31,23 @@ pub enum EffectError {
     
     #[error("Effect row contains duplicate labels: {0}")]
     DuplicateLabels(String),
+}
+
+impl EffectError {
+    pub fn span(&self) -> Option<SourceSpan> {
+        match self {
+            EffectError::EffectMismatch { span, .. } => *span,
+            EffectError::UnhandledEffect { span, .. } => *span,
+            _ => None,
+        }
+    }
+
+    pub fn diagnostic(&self) -> String {
+        match self.span() {
+            Some(span) => format!("{} at {}", self, span),
+            None => self.to_string(),
+        }
+    }
 }
 
 /// Effect labels for different operations (aligned with ONCE-003 spec)
@@ -204,6 +222,19 @@ impl EffectChecker {
         match item {
             HirItem::FnDecl(fn_decl) => self.check_fn_decl(fn_decl),
             HirItem::LetDecl(let_decl) => self.check_let_decl(let_decl),
+            HirItem::TypeDecl(_) => Ok(()),
+            HirItem::TraitDecl(trait_decl) => {
+                for method in &trait_decl.methods {
+                    self.check_fn_decl(method)?;
+                }
+                Ok(())
+            }
+            HirItem::ImplBlock(impl_block) => {
+                for method in &impl_block.methods {
+                    self.check_fn_decl(method)?;
+                }
+                Ok(())
+            }
         }
     }
 
@@ -211,8 +242,38 @@ impl EffectChecker {
         // Create new environment for function
         let mut fn_env = self.env.clone();
         
+        // Lower declared effects
+        let mut declared_effects = EffectRow::Empty;
+        if let Some(effects_row) = &fn_decl.effects {
+            for effect_name in &effects_row.effects {
+                let label = match effect_name.as_str() {
+                    "io" => EffectLabel::Io,
+                    "spawn" => EffectLabel::Spawn,
+                    "time" => EffectLabel::Time,
+                    "net" => EffectLabel::Net,
+                    "pure" => continue,
+                    _ => EffectLabel::Custom(effect_name.clone()),
+                };
+                declared_effects = self.union_effect_rows(declared_effects, EffectRow::Single { label, ty: Type::Unit });
+            }
+        }
+
         // Check function body for effects
-        let _body_effects = self.check_block(&fn_decl.body, &mut fn_env)?;
+        let body_effects = self.check_block(&fn_decl.body, &mut fn_env)?;
+        
+        // Validate that body effects are allowed by declared effects
+        if !self.subsumes_effect_rows(&declared_effects, &body_effects) {
+            self.errors.push(EffectError::UnhandledEffect {
+                name: format!("Function '{}' has unhandled effects. Body effects: {}, Declared: {}", 
+                    fn_decl.name, body_effects, declared_effects),
+                span: fn_decl.span.map(|(start, end)| SourceSpan { 
+                    start, 
+                    end, 
+                    line: 0, // TODO: calculate line/col if needed
+                    column: 0 
+                }),
+            });
+        }
         
         // Add effect constraints
         self.env.constraints.extend(fn_env.constraints);
@@ -316,10 +377,47 @@ impl EffectChecker {
                 Ok(self.union_effect_rows(left_effects, right_effects))
             }
             HirExpr::Block(block) => self.check_block(block, &mut self.env.clone()),
+            HirExpr::If { condition, then_branch, else_branch } => {
+                let cond_effects = self.check_expr(condition)?;
+                let then_effects = self.check_block(then_branch, &mut self.env.clone())?;
+                
+                let mut combined = self.union_effect_rows(cond_effects, then_effects);
+                
+                if let Some(else_expr) = else_branch {
+                    let else_effects = self.check_expr(else_expr)?;
+                    combined = self.union_effect_rows(combined, else_effects);
+                }
+                
+                Ok(combined)
+            }
+            HirExpr::Match { expr, arms } => {
+                let mut combined = self.check_expr(expr)?;
+                
+                for (_, arm_expr) in arms {
+                    let arm_effects = self.check_expr(arm_expr)?;
+                    combined = self.union_effect_rows(combined, arm_effects);
+                }
+                
+                Ok(combined)
+            }
+            HirExpr::For { item: _, collection, body } => {
+                let coll_effects = self.check_expr(collection)?;
+                let body_effects = self.check_block(body, &mut self.env.clone())?;
+                
+                Ok(self.union_effect_rows(coll_effects, body_effects))
+            }
+            HirExpr::Index { base, index } => {
+                let base_effects = self.check_expr(base)?;
+                let index_effects = self.check_expr(index)?;
+                Ok(self.union_effect_rows(base_effects, index_effects))
+            }
+            HirExpr::Try(inner) => {
+                self.check_expr(inner)
+            }
         }
     }
 
-    fn union_effect_rows(&self, left: EffectRow, right: EffectRow) -> EffectRow {
+    pub fn union_effect_rows(&self, left: EffectRow, right: EffectRow) -> EffectRow {
         match (left, right) {
             (EffectRow::Empty, right) => right,
             (left, EffectRow::Empty) => left,
@@ -355,16 +453,18 @@ impl EffectChecker {
                 }
                 EffectConstraint::Contains { row, effect } => {
                     if !self.contains_effect(row, effect) {
-                        self.errors.push(EffectError::UnhandledEffect(
-                            format!("Effect row {} does not contain {}", row, effect)
-                        ));
+                        self.errors.push(EffectError::UnhandledEffect {
+                            name: format!("Effect row {} does not contain {}", row, effect),
+                            span: None,
+                        });
                     }
                 }
                 EffectConstraint::NotContains { row, effect } => {
                     if self.contains_effect(row, effect) {
-                        self.errors.push(EffectError::UnhandledEffect(
-                            format!("Effect row {} contains {}", row, effect)
-                        ));
+                        self.errors.push(EffectError::UnhandledEffect {
+                            name: format!("Effect row {} contains {}", row, effect),
+                            span: None,
+                        });
                     }
                 }
             }
@@ -395,11 +495,24 @@ impl EffectChecker {
     }
 
     fn subsumes_effect_rows(&self, left: &EffectRow, right: &EffectRow) -> bool {
-        // Simplified subsumption check
-        // In a full implementation, this would be more sophisticated
         match (left, right) {
-            (EffectRow::Empty, _) => true,
             (_, EffectRow::Empty) => true,
+            (EffectRow::Empty, _) => false,
+            (EffectRow::Single { label, .. }, right) => self.contains_effect(right, label),
+            (EffectRow::Cons { label, tail, .. }, right) => {
+                self.contains_effect(right, label) && self.subsumes_effect_rows(tail, right)
+            }
+            (EffectRow::Union(l1, r1), right) => {
+                self.subsumes_effect_rows(l1, right) && self.subsumes_effect_rows(r1, right)
+            }
+            // If right is a single/cons/union, we need to check if every element of right is in left
+            (left, EffectRow::Single { label, .. }) => self.contains_effect(left, label),
+            (left, EffectRow::Cons { label, tail, .. }) => {
+                self.contains_effect(left, label) && self.subsumes_effect_rows(left, tail)
+            }
+            (left, EffectRow::Union(l2, r2)) => {
+                self.subsumes_effect_rows(left, l2) && self.subsumes_effect_rows(left, r2)
+            }
             (EffectRow::Var(_), _) | (_, EffectRow::Var(_)) => true,
             _ => self.unify_effect_rows(left, right),
         }
@@ -414,7 +527,7 @@ impl EffectChecker {
         }
     }
 
-    fn contains_effect(&self, row: &EffectRow, effect: &EffectLabel) -> bool {
+    pub fn contains_effect(&self, row: &EffectRow, effect: &EffectLabel) -> bool {
         match row {
             EffectRow::Empty => false,
             EffectRow::Single { label, .. } => label == effect,
@@ -457,7 +570,7 @@ impl EffectInferencer {
 
     pub fn infer(&mut self, hir: &HirProgram) -> Result<EffectfulType, Vec<EffectError>> {
         // Infer effects for the main function
-        let main_effects = self.checker.check(hir)?;
+        let _ = self.checker.check(hir)?;
         
         // For now, return a simple effectful type
         // In a full implementation, this would infer the actual effects
@@ -478,11 +591,11 @@ mod tests {
         let checker = EffectChecker::new();
         
         let left = EffectRow::Single {
-            label: EffectLabel::Async,
+            label: EffectLabel::Spawn,
             ty: Type::Unit,
         };
         let right = EffectRow::Single {
-            label: EffectLabel::Channel,
+            label: EffectLabel::Io,
             ty: Type::Unit,
         };
         
@@ -495,12 +608,12 @@ mod tests {
         let checker = EffectChecker::new();
         
         let row = EffectRow::Single {
-            label: EffectLabel::Async,
+            label: EffectLabel::Spawn,
             ty: Type::Unit,
         };
         
-        assert!(checker.contains_effect(&row, &EffectLabel::Async));
-        assert!(!checker.contains_effect(&row, &EffectLabel::Channel));
+        assert!(checker.contains_effect(&row, &EffectLabel::Spawn));
+        assert!(!checker.contains_effect(&row, &EffectLabel::Io));
     }
 
     #[test]
@@ -509,7 +622,7 @@ mod tests {
         
         let row = EffectRow::Empty;
         
-        assert!(!checker.contains_effect(&row, &EffectLabel::Async));
-        assert!(!checker.contains_effect(&row, &EffectLabel::Channel));
+        assert!(!checker.contains_effect(&row, &EffectLabel::Spawn));
+        assert!(!checker.contains_effect(&row, &EffectLabel::Io));
     }
 }

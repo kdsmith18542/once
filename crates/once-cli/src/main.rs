@@ -1,11 +1,11 @@
 //! Command-line interface for the Once compiler
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use once_lex::Lexer;
 use once_parse::OnceParser;
 use once_hir::HirBuilder;
 use once_ty::TypeChecker;
-use once_effects::EffectChecker;
+use once_ty::effects::EffectChecker;
 use once_linear::LinearityChecker;
 use once_rinf::RegionChecker;
 use once_mir::MirGenerator;
@@ -19,11 +19,18 @@ use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
 #[command(name = "once")]
-#[command(about = "The Once programming language compiler")]
+#[command(about = "Once Language Compiler")]
 #[command(version)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
+}
+
+#[derive(Clone, ValueEnum)]
+enum ExplainTopic {
+    Regions,
+    Effects,
+    Linearity,
 }
 
 #[derive(Subcommand)]
@@ -103,6 +110,13 @@ enum Commands {
         /// Project name
         name: String,
     },
+    /// Explain compiler analysis
+    Explain {
+        /// Topic to explain
+        topic: ExplainTopic,
+        /// Input file
+        input: PathBuf,
+    },
     /// Start language server
     Lsp {
         /// LSP mode
@@ -150,6 +164,9 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::New { name } => {
             create_project(&name)?;
+        }
+        Commands::Explain { topic, input } => {
+            explain_file(&topic, &input)?;
         }
         Commands::Lsp { stdio } => {
             start_lsp_server(stdio)?;
@@ -381,6 +398,36 @@ fn check_regions(input: &PathBuf) -> anyhow::Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn explain_file(topic: &ExplainTopic, input: &PathBuf) -> anyhow::Result<()> {
+    let source = fs::read_to_string(input)?;
+    let lexer = Lexer::new(&source);
+    let tokens: Vec<_> = lexer.collect();
+    let ast = OnceParser::parse(tokens).map_err(|e| anyhow::anyhow!("Parse error: {}", e))?;
+    let mut builder = HirBuilder::new();
+    let hir = builder.build(ast).map_err(|e| anyhow::anyhow!("HIR error: {:?}", e))?;
+
+    match topic {
+        ExplainTopic::Regions => {
+            let mut region_checker = RegionChecker::new();
+            let region_dag = region_checker.check(&hir).map_err(|e| anyhow::anyhow!("Region error: {:?}", e))?;
+            println!("{}", region_checker.explain_regions(&region_dag));
+        }
+        ExplainTopic::Effects => {
+            let mut effect_checker = EffectChecker::new();
+            effect_checker.check(&hir).map_err(|e| anyhow::anyhow!("Effects error: {:?}", e))?;
+            println!("Effects analysis passed.");
+            println!("All effect rows are properly tracked through the call graph.");
+        }
+        ExplainTopic::Linearity => {
+            let mut linearity_checker = LinearityChecker::new();
+            linearity_checker.check(&hir).map_err(|e| anyhow::anyhow!("Linearity error: {:?}", e))?;
+            println!("Linearity analysis passed.");
+            println!("All linear values are consumed exactly once.");
+        }
+    }
     Ok(())
 }
 
