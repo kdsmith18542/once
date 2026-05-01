@@ -1451,36 +1451,38 @@ Ok(ReturnStmt { value, span: Some(start_span) })
                         continue;
                     }
                     Token::LBrace => {
-                        // Struct literal: after parsing an Ident, { field: val, ... } is a struct constructor
+                        // Struct literal: only if the ident starts with uppercase (Once convention)
                         if let Expr::Ident(name) = &expr {
-                            let name = name.clone();
-                            tokens.next(); // consume {
-                            let mut fields = Vec::new();
-                            while let Some(t) = tokens.peek() {
-                                if matches!(t.token, Token::RBrace) {
-                                    tokens.next();
-                                    break;
-                                }
-                                let field_name = match tokens.next() {
-                                    Some(t) => match t.token {
-                                        Token::Ident(name) => name,
-                                        _ => return Err("Expected field name".to_string()),
-                                    },
-                                    None => return Err("Expected field name".to_string()),
-                                };
-                                if !matches!(tokens.next().map(|t| t.token), Some(Token::Colon)) {
-                                    return Err("Expected ':' after field name".to_string());
-                                }
-                                let value = Self::parse_expr(tokens)?;
-                                fields.push((field_name, value));
-                                if let Some(t) = tokens.peek() {
-                                    if matches!(t.token, Token::Comma) {
+                            if name.chars().next().map_or(false, |c| c.is_uppercase()) {
+                                let name = name.clone();
+                                tokens.next(); // consume {
+                                let mut fields = Vec::new();
+                                while let Some(t) = tokens.peek() {
+                                    if matches!(t.token, Token::RBrace) {
                                         tokens.next();
+                                        break;
+                                    }
+                                    let field_name = match tokens.next() {
+                                        Some(t) => match t.token {
+                                            Token::Ident(name) => name,
+                                            _ => return Err("Expected field name".to_string()),
+                                        },
+                                        None => return Err("Expected field name".to_string()),
+                                    };
+                                    if !matches!(tokens.next().map(|t| t.token), Some(Token::Colon)) {
+                                        return Err("Expected ':' after field name".to_string());
+                                    }
+                                    let value = Self::parse_expr(tokens)?;
+                                    fields.push((field_name, value));
+                                    if let Some(t) = tokens.peek() {
+                                        if matches!(t.token, Token::Comma) {
+                                            tokens.next();
+                                        }
                                     }
                                 }
+                                expr = Expr::Struct { name, fields };
+                                continue;
                             }
-                            expr = Expr::Struct { name, fields };
-                            continue;
                         }
                         break;
                     }
@@ -1624,7 +1626,8 @@ Ok(ReturnStmt { value, span: Some(start_span) })
 
     fn parse_match_expr(tokens: &mut std::iter::Peekable<std::vec::IntoIter<TokenWithSpan>>) -> Result<Expr, String> {
         tokens.next(); // consume match
-        let expr = Box::new(Self::parse_expr(tokens)?);
+        // Use parse_primary for the scrutinee to avoid struct-literal/postfix conflicts with '{'
+        let expr = Box::new(Self::parse_primary(tokens)?);
 
         // Expect {
         if !matches!(tokens.next().map(|t| t.token), Some(Token::LBrace)) {
