@@ -193,6 +193,7 @@ pub struct Scheduler {
     pub next_channel_id: ChannelId,
     pub is_running: bool,
     pub deadlock_detector: DeadlockDetector,
+    pub registry: TaskRegistry,
 }
 
 impl Scheduler {
@@ -204,6 +205,7 @@ impl Scheduler {
             next_channel_id: 0,
             is_running: false,
             deadlock_detector: DeadlockDetector::new(),
+            registry: TaskRegistry::new(),
         }
     }
 
@@ -219,6 +221,11 @@ impl Scheduler {
             status: TaskStatus::Pending,
             result: None,
         }
+    }
+
+    /// Register a task handler function
+    pub fn register_handler(&mut self, name: &str, handler: TaskHandler) {
+        self.registry.register(name, handler);
     }
 
     pub fn await_task(&mut self, task_handle: TaskHandle) -> Result<Value, RuntimeError> {
@@ -344,33 +351,24 @@ impl Scheduler {
                 task.status = TaskStatus::Running;
                 task.started_at = Some(Instant::now());
                 
-                // Execute the actual task function
                 let function_name = task.function.clone();
-                let result = match function_name.as_str() {
-                    "main" => {
-                        println!("Executing main task");
-                        Ok(())
-                    }
-                    "error_task" => {
-                        Err(RuntimeError::TaskError("Simulated task error".to_string()))
-                    }
-                    _ => {
-                        println!("Executing task: {}", function_name);
-                        Ok(())
-                    }
-                };
+                let args = task.args.clone();
+                
+                // Dispatch through the task registry
+                let result = self.registry.execute(&function_name, &args);
                 
                 match result {
-                    Ok(_) => {
+                    Ok(value) => {
                         task.status = TaskStatus::Completed;
+                        task.result = Some(value);
                     }
                     Err(e) => {
                         task.status = TaskStatus::Failed;
-                        eprintln!("Task execution failed: {}", e);
+                        task.result = None;
+                        eprintln!("Task '{}' failed: {}", function_name, e);
                     }
                 }
                 task.completed_at = Some(Instant::now());
-                task.result = Some(Value::Unit);
             }
         }
 
