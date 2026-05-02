@@ -566,6 +566,11 @@ impl LinearityChecker {
             HirExpr::FieldAccess { base, field: _ } => {
                 self.check_expr_with_env(base, env)
             }
+            HirExpr::While { condition, body } => {
+                self.check_expr_with_env(condition, env)?;
+                self.check_block(body, env)?;
+                Ok(())
+            }
         }
     }
 

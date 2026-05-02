@@ -262,6 +262,15 @@ impl RegionSolver {
             HirExpr::If { .. } | HirExpr::Match { .. } | HirExpr::For { .. } => {
                 // TODO: Phase 3
             }
+            HirExpr::While { condition, body } => {
+                self.generate_expr_constraints(condition, region.clone())?;
+                let subregion = self.create_region("while_body", false);
+                self.constraints.push(RegionConstraint::Subregion {
+                    sub: subregion.clone(),
+                    super_: region,
+                });
+                self.generate_block_constraints(body, subregion)?;
+            }
             HirExpr::Index { base, index } => {
                 self.generate_expr_constraints(base, region.clone())?;
                 self.generate_expr_constraints(index, region)?;

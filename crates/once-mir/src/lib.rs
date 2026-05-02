@@ -818,6 +818,69 @@ impl MirGenerator {
                     region: None,
                 });
             }
+            HirExpr::While { condition, body } => {
+                // Generate condition evaluation
+                let cond_ops = self.generate_expr(condition, temp_count)?;
+                statements.extend(cond_ops);
+                let cond_temp = MirLocation::Temp(*temp_count - 1);
+
+                let loop_start = self.fresh_label();
+                let loop_body = self.fresh_label();
+                let loop_end = self.fresh_label();
+
+                // Result temp (Unit by default)
+                let result_temp = MirLocation::Temp(*temp_count);
+                *temp_count += 1;
+
+                // Loop start: evaluate condition
+                statements.push(MirStmt {
+                    op: MirOp::Label { id: loop_start },
+                    span: Span::new(0, 0, 0, 0),
+                    region: None,
+                });
+                // Re-evaluate condition each iteration
+                let cond_ops2 = self.generate_expr(condition, temp_count)?;
+                statements.extend(cond_ops2);
+                let cond_temp2 = MirLocation::Temp(*temp_count - 1);
+                statements.push(MirStmt {
+                    op: MirOp::Branch {
+                        condition: cond_temp2,
+                        true_target: loop_body,
+                        false_target: loop_end,
+                    },
+                    span: Span::new(0, 0, 0, 0),
+                    region: None,
+                });
+
+                // Loop body
+                statements.push(MirStmt {
+                    op: MirOp::Label { id: loop_body },
+                    span: Span::new(0, 0, 0, 0),
+                    region: None,
+                });
+                let _body_ops = self.generate_block(body, &mut statements, &mut 0, temp_count)?;
+                // Jump back to condition check
+                statements.push(MirStmt {
+                    op: MirOp::Jump { target: loop_start },
+                    span: Span::new(0, 0, 0, 0),
+                    region: None,
+                });
+
+                // Loop end
+                statements.push(MirStmt {
+                    op: MirOp::Label { id: loop_end },
+                    span: Span::new(0, 0, 0, 0),
+                    region: None,
+                });
+                statements.push(MirStmt {
+                    op: MirOp::LoadLiteral {
+                        value: MirValue::Unit,
+                        dest: result_temp,
+                    },
+                    span: Span::new(0, 0, 0, 0),
+                    region: None,
+                });
+            }
             HirExpr::Index { base, index } => {
                 // Generate operations for base and index
                 let base_ops = self.generate_expr(base, temp_count)?;

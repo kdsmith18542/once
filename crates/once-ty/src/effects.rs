@@ -426,6 +426,11 @@ impl EffectChecker {
             HirExpr::FieldAccess { base, field: _ } => {
                 self.check_expr(base)
             }
+            HirExpr::While { condition, body } => {
+                let cond_effects = self.check_expr(condition)?;
+                let body_effects = self.check_block(body, &mut self.env.clone())?;
+                Ok(self.union_effect_rows(cond_effects, body_effects))
+            }
         }
     }
 

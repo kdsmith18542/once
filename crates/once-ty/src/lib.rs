@@ -1076,6 +1076,19 @@ impl TypeChecker {
                 // Check the base expression and return the field type
                 self.check_expr_with_env(base, env)
             }
+            HirExpr::While { condition, body } => {
+                let cond_type = self.check_expr_with_env(condition, env)?;
+                env.add_constraint(Constraint::Equal {
+                    left: cond_type,
+                    right: Type::Bool,
+                });
+                let body_type = self.check_block(body, env)?;
+                env.add_constraint(Constraint::Equal {
+                    left: body_type,
+                    right: Type::Unit,
+                });
+                Ok(Type::Unit)
+            }
         }
     }
 

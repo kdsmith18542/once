@@ -221,6 +221,11 @@ pub enum HirExpr {
     },
     /// Try/unwrap operator
     Try(Box<HirExpr>),
+    /// While loop
+    While {
+        condition: Box<HirExpr>,
+        body: HirBlock,
+    },
     /// Struct literal: StructName { field: value, ... }
     Struct {
         name: String,
@@ -568,6 +573,10 @@ fn resolve_stmt(&mut self, stmt: Stmt) -> HirStmt {
             Expr::For { item, collection, body } => HirExpr::For {
                 item,
                 collection: Box::new(self.resolve_expr(*collection)),
+                body: self.resolve_block(body),
+            },
+            Expr::While { condition, body } => HirExpr::While {
+                condition: Box::new(self.resolve_expr(*condition)),
                 body: self.resolve_block(body),
             },
             Expr::Index { base, index } => HirExpr::Index {

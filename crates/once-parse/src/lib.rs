@@ -242,6 +242,11 @@ pub enum Expr {
     },
     /// Try/unwrap operator
     Try(Box<Expr>),
+    /// While loop
+    While {
+        condition: Box<Expr>,
+        body: Block,
+    },
     /// Struct literal: StructName { field: value, ... }
     Struct {
         name: String,
@@ -1556,6 +1561,7 @@ Ok(ReturnStmt { value, span: Some(start_span) })
                 Token::If => Self::parse_if_expr(tokens),
                 Token::Match => Self::parse_match_expr(tokens),
                 Token::For => Self::parse_for_expr(tokens),
+                Token::While => Self::parse_while_expr(tokens),
                 Token::Spawn => {
                     tokens.next(); // consume spawn
                     Self::expect_token(tokens, Token::LParen)?;
@@ -1691,6 +1697,22 @@ Ok(ReturnStmt { value, span: Some(start_span) })
         }
 
         Ok(Expr::For { item, collection, body })
+    }
+
+    fn parse_while_expr(tokens: &mut std::iter::Peekable<std::vec::IntoIter<TokenWithSpan>>) -> Result<Expr, String> {
+        tokens.next(); // consume while
+        let condition = Box::new(Self::parse_expr(tokens)?);
+
+        // Expect body block
+        if !matches!(tokens.next().map(|t| t.token), Some(Token::LBrace)) {
+            return Err("Expected '{' after while condition".to_string());
+        }
+        let body = Self::parse_block(tokens)?;
+        if !matches!(tokens.next().map(|t| t.token), Some(Token::RBrace)) {
+            return Err("Expected '}' after while body".to_string());
+        }
+
+        Ok(Expr::While { condition, body })
     }
 
     fn parse_pattern(tokens: &mut std::iter::Peekable<std::vec::IntoIter<TokenWithSpan>>) -> Result<Pattern, String> {
