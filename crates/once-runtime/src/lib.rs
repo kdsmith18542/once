@@ -931,6 +931,59 @@ impl Runtime {
     }
 }
 
+// ================================================================
+// Effect override registry for test-time mocking
+// ================================================================
+
+/// Registry for overriding effects with mock implementations in tests
+pub struct EffectRegistry {
+    overrides: HashMap<String, TaskHandler>,
+}
+
+impl EffectRegistry {
+    pub fn new() -> Self {
+        Self { overrides: HashMap::new() }
+    }
+
+    /// Register a mock handler for an effect (e.g., "io", "net", "spawn")
+    pub fn register_override(&mut self, effect: &str, handler: TaskHandler) {
+        self.overrides.insert(effect.to_string(), handler);
+    }
+
+    /// Check if an effect has a mock override
+    pub fn get_override(&self, effect: &str) -> Option<TaskHandler> {
+        self.overrides.get(effect).copied()
+    }
+
+    /// Execute a mock if one is registered, otherwise return None
+    pub fn try_dispatch(&self, effect: &str, args: &[Value]) -> Option<Result<Value, RuntimeError>> {
+        self.overrides.get(effect).map(|handler| handler(args))
+    }
+
+    /// Clear all overrides (between test runs)
+    pub fn clear(&mut self) {
+        self.overrides.clear();
+    }
+}
+
+impl Runtime {
+    /// Execute an effectful operation, checking overrides first
+    pub fn execute_with_override(
+        &mut self,
+        effect: &str,
+        handler_name: &str,
+        args: &[Value],
+        overrides: &EffectRegistry,
+    ) -> Result<Value, RuntimeError> {
+        // Check for test override first
+        if let Some(result) = overrides.try_dispatch(effect, args) {
+            return result;
+        }
+        // Fall through to normal handler execution
+        self.scheduler.registry.execute(handler_name, args)
+    }
+}
+
 /// Global runtime instance for C-compatible exports
 use lazy_static::lazy_static;
 
