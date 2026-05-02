@@ -837,11 +837,15 @@ impl OnceLsp {
 use tower_lsp::jsonrpc::Result as LspResult;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
+use std::sync::Mutex;
+use once_lex::Lexer;
+use once_parse::OnceParser;
+use once_hir::HirBuilder;
 
 /// Tower-LSP backend that wraps OnceLsp
 struct Backend {
     client: Client,
-    lsp: OnceLsp,
+    lsp: Mutex<OnceLsp>,
 }
 
 #[tower_lsp::async_trait]
@@ -869,13 +873,23 @@ impl LanguageServer for Backend {
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
-        let _uri = params.text_document.uri.to_string();
-        self.client.log_message(MessageType::INFO, format!("Opened: {}", _uri)).await;
+        let uri = params.text_document.uri.clone();
+        let content = params.text_document.text.clone();
+        
+        // Parse and run diagnostics
+        let diagnostics = self.run_diagnostics(&content);
+        
+        self.client.publish_diagnostics(uri, diagnostics, None).await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
-        let _uri = params.text_document.uri.to_string();
-        self.client.log_message(MessageType::INFO, format!("Changed: {}", _uri)).await;
+        let uri = params.text_document.uri.clone();
+        let content = params.content_changes.first()
+            .map(|c| c.text.clone())
+            .unwrap_or_default();
+        
+        let diagnostics = self.run_diagnostics(&content);
+        self.client.publish_diagnostics(uri, diagnostics, None).await;
     }
 
     async fn completion(&self, _params: CompletionParams) -> LspResult<Option<CompletionResponse>> {
@@ -891,11 +905,88 @@ impl LanguageServer for Backend {
     }
 }
 
+impl Backend {
+    fn run_diagnostics(&self, content: &str) -> Vec<Diagnostic> {
+        let mut diagnostics = Vec::new();
+        
+        // Lex
+        let tokens: Vec<_> = Lexer::new(content).collect();
+        
+        // Check for lexer errors
+        for t in &tokens {
+            if let once_lex::Token::Error = t.token {
+                diagnostics.push(Diagnostic {
+                    range: Range {
+                        start: Position { line: t.span.line as u32, character: t.span.column as u32 },
+                        end: Position { line: t.span.line as u32, character: (t.span.column + 1) as u32 },
+                    },
+                    severity: Some(DiagnosticSeverity::ERROR),
+                    message: "Invalid token".to_string(),
+                    ..Default::default()
+                });
+            }
+        }
+        
+        // Parse
+        match OnceParser::parse(tokens) {
+            Ok(ast) => {
+                // HIR
+                let mut builder = HirBuilder::new();
+                match builder.build(ast) {
+                    Ok(hir) => {
+                        // Type check
+                        let mut type_checker = once_ty::TypeChecker::new();
+                        if let Err(errors) = type_checker.check(&hir) {
+                            for err in errors {
+                                diagnostics.push(Diagnostic {
+                                    range: Range {
+                                        start: Position { line: 0, character: 0 },
+                                        end: Position { line: 0, character: 1 },
+                                    },
+                                    severity: Some(DiagnosticSeverity::ERROR),
+                                    message: format!("Type error: {:?}", err),
+                                    ..Default::default()
+                                });
+                            }
+                        }
+                    }
+                    Err(errors) => {
+                        for err in errors {
+                            diagnostics.push(Diagnostic {
+                                range: Range {
+                                    start: Position { line: 0, character: 0 },
+                                    end: Position { line: 0, character: 1 },
+                                },
+                                severity: Some(DiagnosticSeverity::ERROR),
+                                message: format!("HIR error: {:?}", err),
+                                ..Default::default()
+                            });
+                        }
+                    }
+                }
+            }
+            Err(err) => {
+                diagnostics.push(Diagnostic {
+                    range: Range {
+                        start: Position { line: 0, character: 0 },
+                        end: Position { line: 0, character: 1 },
+                    },
+                    severity: Some(DiagnosticSeverity::ERROR),
+                    message: format!("Parse error: {}", err),
+                    ..Default::default()
+                });
+            }
+        }
+        
+        diagnostics
+    }
+}
+
 /// Start the LSP server using tower-lsp over stdio
 pub async fn start_lsp_server() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (service, socket) = LspService::new(|client| Backend {
         client,
-        lsp: OnceLsp::new(),
+        lsp: Mutex::new(OnceLsp::new()),
     });
     Server::new(tokio::io::stdin(), tokio::io::stdout(), socket)
         .serve(service)

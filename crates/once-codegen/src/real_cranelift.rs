@@ -634,6 +634,11 @@ impl RealCraneliftCodegen {
                 builder.def_var(dest_var, result);
                 Ok(())
             }
+            MirOp::TryBlock { result: _ } => {
+                // Try block: placeholder for error context capture
+                // In a full implementation, this would instrument error handling with location info
+                Ok(())
+            }
             MirOp::Return { .. } | MirOp::Jump { .. } | MirOp::Branch { .. } | MirOp::Label { .. } => {
                 // These should never reach translate_non_terminator; they are handled in define_function.
                 Err(RealCodegenError::UnsupportedOp(

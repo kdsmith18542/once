@@ -96,6 +96,8 @@ pub enum MirOp {
     },
     /// Label marker for jump targets
     Label { id: usize },
+    /// Try block: instruments error context capture
+    TryBlock { result: MirLocation },
 }
 
 /// MIR binary operation types
@@ -922,6 +924,13 @@ impl MirGenerator {
             HirExpr::Try(inner) => {
                 let inner_ops = self.generate_expr(inner, temp_count)?;
                 statements.extend(inner_ops);
+                let result_temp = MirLocation::Temp(*temp_count - 1);
+                // Emit try context capture
+                statements.push(MirStmt {
+                    op: MirOp::TryBlock { result: result_temp },
+                    span: Span::new(0, 0, 0, 0),
+                    region: None,
+                });
             }
             HirExpr::Struct { fields, .. } => {
                 for (_name, field_expr) in fields {

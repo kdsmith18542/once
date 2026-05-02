@@ -579,6 +579,10 @@ impl CodeGenerator {
                     name: format!("label_{}", id),
                 });
             }
+            MirOp::TryBlock { result: _ } => {
+                // Try block: placeholder for error context capture
+                // In a full implementation, this would wrap results with location info
+            }
         }
 
         Ok(instructions)
