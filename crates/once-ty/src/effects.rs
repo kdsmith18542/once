@@ -267,12 +267,7 @@ impl EffectChecker {
             self.errors.push(EffectError::UnhandledEffect {
                 name: format!("Function '{}' has unhandled effects. Body effects: {}, Declared: {}", 
                     fn_decl.name, body_effects, declared_effects),
-                span: fn_decl.span.map(|(start, end)| SourceSpan { 
-                    start, 
-                    end, 
-                    line: 0, // TODO: calculate line/col if needed
-                    column: 0 
-                }),
+                span: fn_decl.span.map(|(start, end)| SourceSpan { start, end, line: 0, column: 0 }),
             });
         }
         

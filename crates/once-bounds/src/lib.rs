@@ -74,6 +74,7 @@ pub struct BoundsChecker {
     pub proofs: HashMap<String, BoundsProof>,
     pub constraints: Vec<BoundsConstraint>,
     pub check_annotations: HashMap<String, CheckAnnotation>,
+    known_array_lengths: HashMap<String, usize>,
 }
 
 /// Check annotation for bounds checks
@@ -99,6 +100,7 @@ impl BoundsChecker {
             proofs: HashMap::new(),
             constraints: Vec::new(),
             check_annotations: HashMap::new(),
+            known_array_lengths: HashMap::new(),
         }
     }
 
@@ -125,8 +127,9 @@ impl BoundsChecker {
         // Analyze function parameters for array bounds
         for param in &fn_decl.params {
             if let Some(type_annotation) = &param.type_annotation {
-                // TODO: Add array type support to HirType
-                // For now, skip array parameter analysis
+                if let HirType::Array(_element_type_hir, length) = type_annotation {
+                    self.known_array_lengths.insert(param.name.clone(), *length);
+                }
             }
         }
 
@@ -179,7 +182,23 @@ impl BoundsChecker {
                     self.check_expr(arg)?;
                 }
             }
-            HirExpr::If { .. } | HirExpr::Match { .. } | HirExpr::For { .. } => {} // TODO: Phase 2
+            HirExpr::If { condition, then_branch, else_branch } => {
+                self.check_expr(condition)?;
+                self.check_block(then_branch)?;
+                if let Some(else_expr) = else_branch {
+                    self.check_expr(else_expr)?;
+                }
+            }
+            HirExpr::Match { expr, arms } => {
+                self.check_expr(expr)?;
+                for (_, arm_expr) in arms {
+                    self.check_expr(arm_expr)?;
+                }
+            }
+            HirExpr::For { collection, body, .. } => {
+                self.check_expr(collection)?;
+                self.check_block(body)?;
+            }
             HirExpr::Block(block) => {
                 self.check_block(block)?;
             }
@@ -190,11 +209,12 @@ impl BoundsChecker {
 
     /// Check array access bounds
     fn check_array_access(&mut self, array: &HirExpr, index: &HirExpr) -> Result<(), BoundsError> {
-        // Generate bounds check annotation
         let check_id = format!("array_access_{}", self.check_annotations.len());
         
+        let span = self.extract_span_from_expr(array);
+        
         let annotation = CheckAnnotation {
-            location: Span { start: 0, end: 0, line: 0, column: 0 }, // TODO: Get actual span
+            location: span,
             check_type: CheckType::ArrayAccess {
                 array: self.extract_variable_name(array),
                 index: self.extract_variable_name(index),
@@ -256,7 +276,7 @@ impl BoundsChecker {
         
         // Try to determine if index is constant
         if let Some(constant_index) = self.get_constant_value(index) {
-            if constant_index < array_length {
+            if array_length > 0 && constant_index < array_length {
                 return Ok(Some(BoundsProof {
                     array_var: self.extract_variable_name(array),
                     index_expr: index.clone(),
@@ -267,11 +287,12 @@ impl BoundsChecker {
                     },
                     constraints: Vec::new(),
                 }));
-            } else {
+            } else if array_length > 0 {
                 return Err(BoundsError::BoundsCheckFailed(
                     format!("Index {} out of bounds for array of length {}", constant_index, array_length)
                 ));
             }
+            // If array_length is 0 (unknown), fall through to variable bounds proof
         }
 
         // Generate variable bounds proof
@@ -314,9 +335,13 @@ impl BoundsChecker {
 
     /// Get array length from type information
     fn get_array_length(&self, array: &HirExpr) -> Result<usize, BoundsError> {
-        // This would need to be integrated with the type system
-        // For now, return a default value
-        Ok(10) // TODO: Get actual array length from type information
+        let var_name = self.extract_variable_name(array);
+        if let Some(&len) = self.known_array_lengths.get(&var_name) {
+            Ok(len)
+        } else {
+            // Array length not known statically; return 0 to indicate unknown
+            Ok(0)
+        }
     }
 
     /// Get constant value from expression
@@ -332,6 +357,13 @@ impl BoundsChecker {
         match expr {
             HirExpr::Ident(name) => name.clone(),
             _ => "unknown".to_string(),
+        }
+    }
+
+    fn extract_span_from_expr(&self, expr: &HirExpr) -> Span {
+        match expr {
+            HirExpr::Block(HirBlock { span: Some((start, end)), .. }) => Span { start: *start, end: *end, line: 0, column: 0 },
+            _ => Span { start: 0, end: 0, line: 0, column: 0 },
         }
     }
 
@@ -384,6 +416,9 @@ mod tests {
     #[test]
     fn test_constant_bounds_proof() {
         let mut checker = BoundsChecker::new();
+        
+        // Register array length so constant bounds check can succeed
+        checker.known_array_lengths.insert("arr".to_string(), 10);
         
         // Test constant array access
         let array = HirExpr::Ident("arr".to_string());

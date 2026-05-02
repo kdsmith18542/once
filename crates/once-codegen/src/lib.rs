@@ -9,7 +9,6 @@
 
 use once_mir::*;
 use once_rinf::{Region, RegionDag};
-use once_lex::Span;
 use std::collections::HashMap;
 use std::fmt;
 use thiserror::Error;
@@ -17,10 +16,6 @@ use thiserror::Error;
 // Real Cranelift integration
 pub mod real_cranelift;
 pub use real_cranelift::{RealCraneliftCodegen, RealCodegenError};
-
-// Import Cranelift types for compatibility
-use cranelift_codegen::ir::Signature;
-use cranelift_codegen::isa::CallConv;
 
 /// Code generation errors
 #[derive(Error, Debug, Clone)]
@@ -318,11 +313,11 @@ impl CodeGenerator {
         // Create function signature
         let signature = self.create_function_signature(mir_fn)?;
 
-        // Create local variables
+        // Create local variables (type info not tracked per-local in MIR; use I64 as default)
         for i in 0..mir_fn.local_count {
             let local = LocalVariable {
                 name: format!("local_{}", i),
-                ty: Type::Int(IntWidth::I64), // TODO: Use actual types
+                ty: Type::Int(IntWidth::I64),
                 location: LocalLocation::Stack(i * 8),
             };
             locals.push(local);
@@ -330,7 +325,7 @@ impl CodeGenerator {
 
         // Compile MIR statements to instructions
         for stmt in &mir_fn.body.statements {
-            let stmt_instructions = self.compile_statement(stmt)?;
+            let stmt_instructions = self.compile_statement(stmt, mir_fn)?;
             instructions.extend(stmt_instructions);
         }
 
@@ -339,7 +334,7 @@ impl CodeGenerator {
             signature,
             instructions,
             locals,
-            region_info: None, // TODO: Extract from region DAG
+            region_info: self.find_function_region(&mir_fn.name),
         })
     }
 
@@ -373,8 +368,8 @@ impl CodeGenerator {
             once_hir::HirType::Str => Type::String,
             once_hir::HirType::Hole => Type::Int(IntWidth::I64), // type hole placeholder
             once_hir::HirType::Ident(_name) => {
-                // TODO: Handle type aliases and user-defined types
-                Type::Int(IntWidth::I64) // Placeholder
+                // Named/aliased types resolve to pointer representation
+                Type::Int(IntWidth::I64)
             }
             once_hir::HirType::Linear(inner) => {
                 // Linear types are represented as pointers in the generated code
@@ -403,7 +398,7 @@ impl CodeGenerator {
         }
     }
 
-    fn compile_statement(&mut self, stmt: &MirStmt) -> Result<Vec<Instruction>, Vec<CodegenError>> {
+    fn compile_statement(&mut self, stmt: &MirStmt, mir_fn: &MirFunction) -> Result<Vec<Instruction>, Vec<CodegenError>> {
         let mut instructions = Vec::new();
 
         match &stmt.op {
@@ -413,7 +408,7 @@ impl CodeGenerator {
                 instructions.push(Instruction::Move {
                     dest: to_reg,
                     src: from_reg,
-                    ty: Type::Int(IntWidth::I64), // TODO: Use actual type
+                    ty: self.infer_type_for_location(from, mir_fn),
                 });
             }
             MirOp::Drop { location } => {
@@ -455,19 +450,20 @@ impl CodeGenerator {
                 let left_reg = self.get_register(left);
                 let right_reg = self.get_register(right);
                 let dest_reg = self.get_register(dest);
-                let ty = Type::Int(IntWidth::I64); // TODO: Use actual type
+                let op_ty = self.infer_type_for_location(left, mir_fn);
+                let cmp_ty = Type::Bool;
                 let instr = match op {
-                    once_mir::MirBinOp::Add => Instruction::Add { dest: dest_reg, left: left_reg, right: right_reg, ty },
-                    once_mir::MirBinOp::Sub => Instruction::Sub { dest: dest_reg, left: left_reg, right: right_reg, ty },
-                    once_mir::MirBinOp::Mul => Instruction::Mul { dest: dest_reg, left: left_reg, right: right_reg, ty },
-                    once_mir::MirBinOp::Div => Instruction::Div { dest: dest_reg, left: left_reg, right: right_reg, ty },
-                    once_mir::MirBinOp::Eq => Instruction::Eq { dest: dest_reg, left: left_reg, right: right_reg, ty },
-                    once_mir::MirBinOp::Ne => Instruction::Ne { dest: dest_reg, left: left_reg, right: right_reg, ty },
-                    once_mir::MirBinOp::Lt => Instruction::Lt { dest: dest_reg, left: left_reg, right: right_reg, ty },
-                    once_mir::MirBinOp::Le => Instruction::Le { dest: dest_reg, left: left_reg, right: right_reg, ty },
-                    once_mir::MirBinOp::Gt => Instruction::Gt { dest: dest_reg, left: left_reg, right: right_reg, ty },
-                    once_mir::MirBinOp::Ge => Instruction::Ge { dest: dest_reg, left: left_reg, right: right_reg, ty },
-                    once_mir::MirBinOp::And | once_mir::MirBinOp::Or | once_mir::MirBinOp::Move => Instruction::Move { dest: dest_reg, src: left_reg, ty },
+                    once_mir::MirBinOp::Add => Instruction::Add { dest: dest_reg, left: left_reg, right: right_reg, ty: op_ty },
+                    once_mir::MirBinOp::Sub => Instruction::Sub { dest: dest_reg, left: left_reg, right: right_reg, ty: op_ty },
+                    once_mir::MirBinOp::Mul => Instruction::Mul { dest: dest_reg, left: left_reg, right: right_reg, ty: op_ty },
+                    once_mir::MirBinOp::Div => Instruction::Div { dest: dest_reg, left: left_reg, right: right_reg, ty: op_ty },
+                    once_mir::MirBinOp::Eq => Instruction::Eq { dest: dest_reg, left: left_reg, right: right_reg, ty: cmp_ty },
+                    once_mir::MirBinOp::Ne => Instruction::Ne { dest: dest_reg, left: left_reg, right: right_reg, ty: cmp_ty },
+                    once_mir::MirBinOp::Lt => Instruction::Lt { dest: dest_reg, left: left_reg, right: right_reg, ty: cmp_ty },
+                    once_mir::MirBinOp::Le => Instruction::Le { dest: dest_reg, left: left_reg, right: right_reg, ty: cmp_ty },
+                    once_mir::MirBinOp::Gt => Instruction::Gt { dest: dest_reg, left: left_reg, right: right_reg, ty: cmp_ty },
+                    once_mir::MirBinOp::Ge => Instruction::Ge { dest: dest_reg, left: left_reg, right: right_reg, ty: cmp_ty },
+                    once_mir::MirBinOp::And | once_mir::MirBinOp::Or | once_mir::MirBinOp::Move => Instruction::Move { dest: dest_reg, src: left_reg, ty: op_ty },
                 };
                 instructions.push(instr);
             }
@@ -488,7 +484,6 @@ impl CodeGenerator {
                 });
             }
             MirOp::SpawnTask { function, args, result } => {
-                let _func_reg = self.get_register(&MirLocation::Temp(0)); // TODO: Handle function references
                 let result_reg = self.get_register(result);
                 let arg_regs: Vec<String> = args.iter().map(|arg| self.get_register(arg)).collect();
                 instructions.push(Instruction::SpawnTask {
@@ -506,14 +501,15 @@ impl CodeGenerator {
                 });
             }
             MirOp::Call { function, args, result } => {
-                let _func_reg = self.get_register(&MirLocation::Temp(0)); // TODO: Handle function references
                 let result_reg = self.get_register(result);
                 let arg_regs: Vec<String> = args.iter().map(|arg| self.get_register(arg)).collect();
                 instructions.push(Instruction::Call {
                     dest: Some(result_reg),
                     func: function.clone(),
                     args: arg_regs,
-                    ty: Type::Int(IntWidth::I64), // TODO: Use actual return type
+                    ty: self.context.functions.get(function)
+                        .map(|f| f.signature.return_type.clone())
+                        .unwrap_or(Type::Int(IntWidth::I64)),
                 });
             }
             MirOp::LoadLiteral { value, dest } => {
@@ -606,6 +602,26 @@ impl CodeGenerator {
         }
     }
 
+    fn find_function_region(&self, fn_name: &str) -> Option<Region> {
+        let target_name = format!("fn_{}", fn_name);
+        self.context.regions.nodes.keys()
+            .find(|r| r.name == target_name)
+            .cloned()
+    }
+
+    fn infer_type_for_location(&self, loc: &MirLocation, mir_fn: &MirFunction) -> Type {
+        match loc {
+            MirLocation::Param(id) => {
+                if let Some((_, hir_ty)) = mir_fn.params.get(*id) {
+                    return self.convert_type(hir_ty);
+                }
+                Type::Int(IntWidth::I64)
+            }
+            MirLocation::Return => self.convert_type(&mir_fn.return_type),
+            _ => Type::Int(IntWidth::I64),
+        }
+    }
+
     fn get_temp_register(&mut self) -> String {
         let reg = format!("temp_{}", self.context.next_temp);
         self.context.next_temp += 1;
@@ -621,49 +637,10 @@ impl CodeGenerator {
             return Ok(());
         }
 
-        // Fallback: create a simple custom object file format (placeholder)
-        let mut object_data = Vec::new();
-        
-        // Write object file header
-        object_data.extend_from_slice(b"ONCE_OBJ\0");
-        
-        // Write function count
-        let func_count = program.functions.len() as u32;
-        object_data.extend_from_slice(&func_count.to_le_bytes());
-        
-        // Write functions
-        for (name, func) in &program.functions {
-            // Function name length and name
-            let name_bytes = name.as_bytes();
-            object_data.extend_from_slice(&(name_bytes.len() as u32).to_le_bytes());
-            object_data.extend_from_slice(name_bytes);
-            
-            // Function signature (simplified)
-            object_data.push(0); // Return type placeholder
-            object_data.push(func.signature.params.len() as u8); // Parameter count
-        }
-        
-        // Write global count
-        let global_count = program.globals.len() as u32;
-        object_data.extend_from_slice(&global_count.to_le_bytes());
-        
-        // Write globals
-        for (name, global) in &program.globals {
-            // Global name length and name
-            let name_bytes = name.as_bytes();
-            object_data.extend_from_slice(&(name_bytes.len() as u32).to_le_bytes());
-            object_data.extend_from_slice(name_bytes);
-            
-            // Global type and constant flag
-            object_data.push(0); // Type placeholder
-            object_data.push(if global.is_constant { 1 } else { 0 });
-        }
-        
-        // Write to file
-        std::fs::write(output_path, object_data)
-            .map_err(|e| vec![CodegenError::ObjectFileFailed(format!("Failed to write object file: {}", e))])?;
-        
-        Ok(())
+        // No object data available — codegen must use real Cranelift backend
+        Err(vec![CodegenError::ObjectFileFailed(
+            "No object data available — use generate_with_cranelift".to_string()
+        )])
     }
     
 
@@ -766,7 +743,15 @@ mod tests {
             region: None,
         };
         
-        let instructions = generator.compile_statement(&stmt).unwrap();
+        let mir_fn = MirFunction {
+            name: "test".to_string(),
+            params: Vec::new(),
+            return_type: once_hir::HirType::Unit,
+            body: MirBlock { statements: Vec::new(), region: None },
+            local_count: 0,
+            temp_count: 0,
+        };
+        let instructions = generator.compile_statement(&stmt, &mir_fn).unwrap();
         assert!(!instructions.is_empty());
     }
 }

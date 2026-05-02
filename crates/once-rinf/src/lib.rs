@@ -105,6 +105,7 @@ pub struct RegionSolver {
     regions: HashMap<usize, Region>,
     constraints: Vec<RegionConstraint>,
     next_region_id: usize,
+    next_expr_id: usize,
     errors: Vec<RegionError>,
 }
 
@@ -114,6 +115,7 @@ impl RegionSolver {
             regions: HashMap::new(),
             constraints: Vec::new(),
             next_region_id: 0,
+            next_expr_id: 0,
             errors: Vec::new(),
         }
     }
@@ -190,9 +192,10 @@ impl RegionSolver {
                 // If this is an allocation, add allocation constraint
                 if self.is_allocation(&let_stmt.value) {
                     self.constraints.push(RegionConstraint::Allocation {
-                        expr_id: 0, // TODO: Use actual expression ID
+                        expr_id: self.next_expr_id,
                         region: region.clone(),
                     });
+                    self.next_expr_id += 1;
                 }
             }
             HirStmt::Return(return_stmt) => {
@@ -260,8 +263,42 @@ impl RegionSolver {
                 
                 self.generate_block_constraints(block, subregion)?;
             }
-            HirExpr::If { .. } | HirExpr::Match { .. } | HirExpr::For { .. } => {
-                // TODO: Phase 3
+            HirExpr::If { condition, then_branch, else_branch } => {
+                self.generate_expr_constraints(condition, region.clone())?;
+                let subregion = self.create_region("then_branch", false);
+                self.constraints.push(RegionConstraint::Subregion {
+                    sub: subregion.clone(),
+                    super_: region.clone(),
+                });
+                self.generate_block_constraints(then_branch, subregion)?;
+                if let Some(else_expr) = else_branch {
+                    let else_subregion = self.create_region("else_branch", false);
+                    self.constraints.push(RegionConstraint::Subregion {
+                        sub: else_subregion.clone(),
+                        super_: region,
+                    });
+                    self.generate_expr_constraints(else_expr, else_subregion)?;
+                }
+            }
+            HirExpr::Match { expr, arms } => {
+                self.generate_expr_constraints(expr, region.clone())?;
+                for (_, arm_expr) in arms {
+                    let arm_subregion = self.create_region("match_arm", false);
+                    self.constraints.push(RegionConstraint::Subregion {
+                        sub: arm_subregion.clone(),
+                        super_: region.clone(),
+                    });
+                    self.generate_expr_constraints(arm_expr, arm_subregion)?;
+                }
+            }
+            HirExpr::For { collection, body, .. } => {
+                self.generate_expr_constraints(collection, region.clone())?;
+                let subregion = self.create_region("for_body", false);
+                self.constraints.push(RegionConstraint::Subregion {
+                    sub: subregion.clone(),
+                    super_: region,
+                });
+                self.generate_block_constraints(body, subregion)?;
             }
             HirExpr::While { condition, body } => {
                 self.generate_expr_constraints(condition, region.clone())?;

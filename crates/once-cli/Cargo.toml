@@ -25,3 +25,4 @@ once-lsp = { path = "../once-lsp" }
 clap = { workspace = true }
 indicatif = { workspace = true }
 anyhow = { workspace = true }
+tokio = { workspace = true }

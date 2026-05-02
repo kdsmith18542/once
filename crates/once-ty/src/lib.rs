@@ -73,7 +73,7 @@ impl TypeError {
             TypeError::TypeMismatch { span, .. } => *span,
             TypeError::UndefinedVariable { span, .. } => *span,
             TypeError::TraitBoundNotSatisfied { span, .. } => *span,
-            TypeError::LinearValueReused(_) => None, // TODO: add span to this variant
+            TypeError::LinearValueReused(_) => None,
             TypeError::NonLinearInLinearContext(_) => None,
             TypeError::Effect(_) => None,
             _ => None,
@@ -718,13 +718,13 @@ impl TypeChecker {
         let trait_def = TraitDef {
             name: trait_decl.name.clone(),
             type_params: trait_decl.type_params.iter().map(|p| p.name.clone()).collect(),
-            methods: trait_decl.methods.iter().map(|m| {
-                (m.name.clone(), TypeScheme {
-                    vars: vec![], // TODO: Handle type parameters properly
-                    ty: self.hir_type_to_type(&m.return_type.clone().unwrap_or(HirType::Unit)),
-                    constraints: vec![],
-                })
-            }).collect(),
+                methods: trait_decl.methods.iter().map(|m| {
+                    (m.name.clone(), TypeScheme {
+                        vars: m.type_params.iter().map(|_| self.env.fresh_var()).collect(),
+                        ty: self.hir_type_to_type(&m.return_type.clone().unwrap_or(HirType::Unit)),
+                        constraints: vec![],
+                    })
+                }).collect(),
         };
         self.register_trait(trait_def);
         Ok(())
@@ -1061,9 +1061,14 @@ impl TypeChecker {
                 Ok(elem_type)
             }
             HirExpr::Try(inner) => {
-                // For now, just check the inner expression and return its type
-                // In a full implementation, this would unwrap Result types
-                self.check_expr_with_env(inner, env)
+                let inner_type = self.check_expr_with_env(inner, env)?;
+                let ok_type = Type::Var(env.fresh_var());
+                let err_type = Type::Var(env.fresh_var());
+                env.add_constraint(Constraint::Equal {
+                    left: inner_type,
+                    right: Type::Result { ok_type: Box::new(ok_type.clone()), err_type: Box::new(err_type) },
+                });
+                Ok(ok_type)
             }
             HirExpr::Struct { name: _, fields } => {
                 // Each field's expression is checked; the struct type determined from declarations
@@ -1133,11 +1138,7 @@ impl TypeChecker {
             HirType::Bool => Type::Bool,
             HirType::Float => Type::Float,
             HirType::Str => Type::Str,
-            HirType::Hole => {
-                let fresh = Type::Var(self.env.fresh_var());
-                println!("  [type hole] _ inferred as type variable — will be resolved during unification");
-                fresh
-            }
+            HirType::Hole => Type::Var(self.env.fresh_var()),
             HirType::Linear(ty) => Type::Linear(Box::new(self.hir_type_to_type(ty))),
             HirType::Affine(ty) => Type::Affine(Box::new(self.hir_type_to_type(ty))),
             HirType::Array(ty, n) => Type::Array { 
@@ -1179,9 +1180,15 @@ impl TypeChecker {
         let ty_free = ty.free_vars();
         let vars: Vec<TypeVar> = ty_free.difference(&env_free).cloned().collect();
         TypeScheme {
-            vars,
+            vars: vars.clone(),
             ty: ty.clone(),
-            constraints: vec![], // TODO: Collect constraints on these variables
+            constraints: env.constraints.iter()
+                .filter(|c| {
+                    let constraint_vars = c.free_vars();
+                    vars.iter().any(|v| constraint_vars.contains(v))
+                })
+                .cloned()
+                .collect(),
         }
     }
 

@@ -6,13 +6,13 @@ use once_mir::{MirProgram, MirFunction, MirStmt, MirOp, MirLocation, MirValue};
 use once_hir::HirType;
 use once_rinf::Region;
 use thiserror::Error;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use cranelift_codegen::ir::{self, types, AbiParam, Signature, Value};
 use cranelift_codegen::isa::CallConv;
 use cranelift_codegen::settings;
 use cranelift_codegen::Context;
 use cranelift_codegen::ir::InstBuilder;
-use cranelift_module::{default_libcall_names, Module, Linkage, FuncId};
+use cranelift_module::{default_libcall_names, Module, Linkage, FuncId, DataId, DataDescription};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use cranelift_native::builder as native_builder;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
@@ -42,6 +42,8 @@ pub struct RealCraneliftCodegen {
     module: Option<ObjectModule>,
     /// Mapping from function names to declared FuncIds.
     func_map: HashMap<String, FuncId>,
+    /// Mapping from string literals to data object ids.
+    string_data: HashMap<String, DataId>,
 }
 
 impl RealCraneliftCodegen {
@@ -66,6 +68,7 @@ impl RealCraneliftCodegen {
         Ok(Self {
             module: Some(module),
             func_map: HashMap::new(),
+            string_data: HashMap::new(),
         })
     }
 
@@ -170,6 +173,36 @@ impl RealCraneliftCodegen {
         // Populate func_map
         for (name, func_id) in declared {
             self.func_map.insert(name, func_id);
+        }
+
+        // Pre-declare string literal data
+        {
+            let module = self.module.as_mut().ok_or_else(||
+                RealCodegenError::ModuleError("Module not initialized".to_string()))?;
+            let mut seen_strings: HashMap<String, bool> = HashMap::new();
+            let mut str_counter: usize = 0;
+            for mir_fn in &mir.functions {
+                for stmt in &mir_fn.body.statements {
+                    if let MirOp::LoadLiteral { value: MirValue::String(s), .. } = &stmt.op {
+                        if !seen_strings.contains_key(s) {
+                            seen_strings.insert(s.clone(), true);
+                            let data_name = format!("str_{}", str_counter);
+                            str_counter += 1;
+                            let mut data_desc = DataDescription::new();
+                            let mut bytes = s.as_bytes().to_vec();
+                            bytes.push(0); // null terminator
+                            data_desc.define(bytes.into_boxed_slice());
+                            let data_id = module
+                                .declare_data(&data_name, Linkage::Local, false, false)
+                                .map_err(|e| RealCodegenError::ModuleError(e.to_string()))?;
+                            module
+                                .define_data(data_id, &data_desc)
+                                .map_err(|e| RealCodegenError::ModuleError(e.to_string()))?;
+                            self.string_data.insert(s.clone(), data_id);
+                        }
+                    }
+                }
+            }
         }
 
         // Define each function body
@@ -382,9 +415,16 @@ impl RealCraneliftCodegen {
                     MirValue::Int(n) => builder.ins().iconst(types::I64, *n),
                     MirValue::Float(f) => builder.ins().f64const(*f),
                     MirValue::Bool(b) => builder.ins().iconst(types::I64, if *b { 1 } else { 0 }),
-                    MirValue::String(_s) => {
-                        // TODO: embed string in data section and load pointer
-                        builder.ins().iconst(types::I64, 0)
+                    MirValue::String(s) => {
+                        match self.string_data.get(s) {
+                            Some(data_id) => {
+                                let module = self.module.as_mut().ok_or_else(||
+                                    RealCodegenError::ModuleError("Module not available".to_string()))?;
+                                let gv = module.declare_data_in_func(*data_id, &mut builder.func);
+                                builder.ins().global_value(types::I64, gv)
+                            }
+                            None => builder.ins().iconst(types::I64, 0),
+                        }
                     }
                     MirValue::Unit => builder.ins().iconst(types::I64, 0),
                 };
@@ -512,10 +552,16 @@ impl RealCraneliftCodegen {
                 builder.def_var(var, recv_val);
                 Ok(())
             }
-            MirOp::SpawnTask { function: _, args, result } => {
-                // For now, pass the function name as a pointer (placeholder)
-                // In a real implementation, we'd look up the function pointer
-                let func_ptr = builder.ins().iconst(types::I64, 0);
+            MirOp::SpawnTask { function, args, result } => {
+                // Look up function pointer by name
+                let func_ptr = if let Some(func_id) = self.func_map.get(function) {
+                    let module = self.module.as_mut().ok_or_else(||
+                        RealCodegenError::ModuleError("Module not available".to_string()))?;
+                    let func_ref = module.declare_func_in_func(*func_id, &mut builder.func);
+                    builder.ins().func_addr(types::I64, func_ref)
+                } else {
+                    builder.ins().iconst(types::I64, 0)
+                };
                 let mut arg_values = Vec::new();
                 for arg_loc in args {
                     let arg_var = *var_map.get(arg_loc).ok_or_else(|| {

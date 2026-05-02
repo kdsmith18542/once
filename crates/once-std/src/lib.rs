@@ -1364,12 +1364,12 @@ pub enum Option<T> {
     None,
 }
 
-impl<T> Resource for Option<T> {
+impl<T: Resource> Resource for Option<T> {
     fn consume(self) -> std::result::Result<(), StdError> {
         match self {
-            Option::Some(_value) => {
-                // TODO: If T implements Resource, consume it
-                Ok(())
+            Option::Some(value) => {
+                // Consume the inner value if it implements Resource
+                value.consume()
             }
             Option::None => Ok(()),
         }
@@ -1421,22 +1421,36 @@ impl<T: std::clone::Clone> OnceClone for Option<T> {
     }
 }
 
+// Inherent consume for Option (works without Resource trait)
+impl<T> Option<T> {
+    pub fn consume(self) -> std::result::Result<(), StdError> {
+        Ok(()) // Ordinary values don't need explicit cleanup
+    }
+}
+
 /// Result - a linear result type
 pub enum Result<T, E> {
     Ok(T),
     Err(E),
 }
 
-impl<T, E> Resource for Result<T, E> {
+// Inherent consume for Result (works without Resource trait)
+impl<T, E> Result<T, E> {
+    pub fn consume(self) -> std::result::Result<(), StdError> {
+        Ok(()) // Ordinary values don't need explicit cleanup
+    }
+}
+
+impl<T: Resource, E: Resource> Resource for Result<T, E> {
     fn consume(self) -> std::result::Result<(), StdError> {
         match self {
-            Result::Ok(_value) => {
-                // TODO: If T implements Resource, consume it
-                Ok(())
+            Result::Ok(value) => {
+                // Consume the inner success value
+                value.consume()
             }
-            Result::Err(_error) => {
-                // TODO: If E implements Resource, consume it
-                Ok(())
+            Result::Err(error) => {
+                // Consume the inner error value
+                error.consume()
             }
         }
     }

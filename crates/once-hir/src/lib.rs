@@ -3,7 +3,7 @@
 //! The HIR is a desugared, name-resolved representation of Once source code.
 //! It serves as the input to type checking and subsequent compiler passes.
 
-use once_parse::{Program, Item, FnDecl, LetDecl, GoalDecl, Type, Expr, Stmt, Block, BinaryOp, Literal, Span};
+use once_parse::{Program, Item, FnDecl, LetDecl, GoalDecl, Type, Expr, Stmt, Block, BinaryOp, Literal};
 mod import_resolver;
 use indexmap::IndexMap;
 use import_resolver::ImportResolver;
@@ -381,7 +381,10 @@ Item::ImportDecl(import) => {
         if self.errors.is_empty() {
             let mut program_hir = HirProgram { items: hir_items, imports };
             let resolver = ImportResolver::new();
-            let _ = resolver.resolve(&mut program_hir);
+            if let Err(e) = resolver.resolve(&mut program_hir) {
+                self.errors.push(HirError::InvalidImport(e));
+                return Err(self.errors);
+            }
             Ok(program_hir)
         } else {
             Err(self.errors)
@@ -682,22 +685,33 @@ mod tests {
 
     #[test]
     fn test_hir_construction() {
-        let source = "fn main() -> Unit { return }";
-        // let tokens: Vec<_> = Lexer::new(source).collect();
-        // let tokens: Vec<_> = Lexer::new(source).collect();
-        // let program = OnceParser::parse(tokens).unwrap();
+        let fn_decl = HirFnDecl {
+            name: "main".to_string(),
+            type_params: vec![],
+            params: vec![],
+            return_type: Some(HirType::Unit),
+            effects: None,
+            body: HirBlock {
+                statements: vec![
+                    HirStmt::Return(HirReturnStmt { value: None, span: None }),
+                ],
+                span: None,
+            },
+            is_public: false,
+            span: None,
+        };
         
-        // let builder = HirBuilder::new();
-        // let hir = builder.build(program).unwrap();
-        
-        // assert_eq!(hir.items.len(), 1);
-        // if let HirItem::FnDecl(fn_decl) = &hir.items[0] {
-        //     assert_eq!(fn_decl.name, "main");
-        //     assert_eq!(fn_decl.params.len(), 0);
-        //     assert_eq!(fn_decl.return_type, Some(HirType::Unit));
-        // } else {
-        //     panic!("Expected function declaration");
-        // }
+        let mut prog = HirProgram { items: vec![HirItem::FnDecl(fn_decl)], imports: vec![] };
+        let resolver = ImportResolver::new();
+        assert!(resolver.resolve(&mut prog).is_ok());
+        assert_eq!(prog.items.len(), 1);
+        if let HirItem::FnDecl(ref fn_decl) = prog.items[0] {
+            assert_eq!(fn_decl.name, "main");
+            assert_eq!(fn_decl.params.len(), 0);
+            assert_eq!(fn_decl.return_type, Some(HirType::Unit));
+        } else {
+            panic!("Expected function declaration");
+        }
     }
 
     #[test]

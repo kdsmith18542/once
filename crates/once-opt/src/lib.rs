@@ -6,7 +6,7 @@
 //! - Inline small functions
 //! - Loop unrolling for known iterations
 
-use once_hir::{HirProgram, HirItem, HirExpr, HirStmt, HirFnDecl};
+use once_hir::{HirProgram, HirItem, HirExpr, HirStmt, HirFnDecl, HirBinaryOp, HirLiteral, HirBlock};
 use once_mir::{MirProgram, MirBlock, MirOp, MirStmt};
 use thiserror::Error;
 
@@ -52,12 +52,107 @@ impl Optimizer {
 
     fn optimize_function(&mut self, fn_decl: &mut HirFnDecl) -> bool {
         let mut changed = false;
-        changed |= self.constant_fold_block(&mut fn_decl.body.statements);
+        changed |= self.constant_fold_block(&mut fn_decl.body);
         changed
     }
 
-    fn constant_fold_block(&mut self, _block: &mut Vec<HirStmt>) -> bool {
-        false
+    fn constant_fold_block(&mut self, block: &mut HirBlock) -> bool {
+        let mut changed = false;
+        for stmt in &mut block.statements {
+            changed |= self.constant_fold_stmt(stmt);
+        }
+        changed
+    }
+
+    fn constant_fold_stmt(&mut self, stmt: &mut HirStmt) -> bool {
+        match stmt {
+            HirStmt::Let(let_stmt) => self.constant_fold_expr(&mut let_stmt.value),
+            HirStmt::Return(return_stmt) => {
+                if let Some(ref mut expr) = return_stmt.value {
+                    self.constant_fold_expr(expr)
+                } else {
+                    false
+                }
+            }
+            HirStmt::Expr(expr) => self.constant_fold_expr(expr),
+            HirStmt::Using(using_stmt) => {
+                let mut changed = self.constant_fold_expr(&mut using_stmt.init);
+                changed |= self.constant_fold_block(&mut using_stmt.body);
+                changed
+            }
+            _ => false,
+        }
+    }
+
+    fn constant_fold_expr(&mut self, expr: &mut HirExpr) -> bool {
+        match expr {
+            HirExpr::Binary { left, op, right } => {
+                let mut changed = self.constant_fold_expr(left);
+                changed |= self.constant_fold_expr(right);
+                if let (HirExpr::Literal(HirLiteral::Int(l)), HirExpr::Literal(HirLiteral::Int(r))) = (left.as_ref(), right.as_ref()) {
+                    let result = match op {
+                        HirBinaryOp::Add => HirLiteral::Int(l + r),
+                        HirBinaryOp::Sub => HirLiteral::Int(l - r),
+                        HirBinaryOp::Mul => HirLiteral::Int(l * r),
+                        HirBinaryOp::Div if *r != 0 => HirLiteral::Int(l / r),
+                        HirBinaryOp::Eq => HirLiteral::Bool(l == r),
+                        HirBinaryOp::Ne => HirLiteral::Bool(l != r),
+                        HirBinaryOp::Lt => HirLiteral::Bool(l < r),
+                        HirBinaryOp::Le => HirLiteral::Bool(l <= r),
+                        HirBinaryOp::Gt => HirLiteral::Bool(l > r),
+                        HirBinaryOp::Ge => HirLiteral::Bool(l >= r),
+                        _ => return changed,
+                    };
+                    *expr = HirExpr::Literal(result);
+                    true
+                } else if let (HirExpr::Literal(HirLiteral::Bool(l)), HirExpr::Literal(HirLiteral::Bool(r))) = (left.as_ref(), right.as_ref()) {
+                    let result = match op {
+                        HirBinaryOp::And => HirLiteral::Bool(*l && *r),
+                        HirBinaryOp::Or => HirLiteral::Bool(*l || *r),
+                        HirBinaryOp::Eq => HirLiteral::Bool(l == r),
+                        HirBinaryOp::Ne => HirLiteral::Bool(l != r),
+                        _ => return changed,
+                    };
+                    *expr = HirExpr::Literal(result);
+                    true
+                } else if let (HirExpr::Literal(HirLiteral::Float(l)), HirExpr::Literal(HirLiteral::Float(r))) = (left.as_ref(), right.as_ref()) {
+                    let result = match op {
+                        HirBinaryOp::Add => HirLiteral::Float(l + r),
+                        HirBinaryOp::Sub => HirLiteral::Float(l - r),
+                        HirBinaryOp::Mul => HirLiteral::Float(l * r),
+                        HirBinaryOp::Div if *r != 0.0 => HirLiteral::Float(l / r),
+                        HirBinaryOp::Eq => HirLiteral::Bool(l == r),
+                        HirBinaryOp::Ne => HirLiteral::Bool(l != r),
+                        HirBinaryOp::Lt => HirLiteral::Bool(l < r),
+                        HirBinaryOp::Le => HirLiteral::Bool(l <= r),
+                        HirBinaryOp::Gt => HirLiteral::Bool(l > r),
+                        HirBinaryOp::Ge => HirLiteral::Bool(l >= r),
+                        _ => return changed,
+                    };
+                    *expr = HirExpr::Literal(result);
+                    true
+                } else {
+                    changed
+                }
+            }
+            HirExpr::Block(block) => self.constant_fold_block(block),
+            HirExpr::If { condition, then_branch, else_branch } => {
+                let mut changed = self.constant_fold_expr(condition);
+                changed |= self.constant_fold_block(then_branch);
+                if let Some(ref mut else_expr) = else_branch {
+                    changed |= self.constant_fold_expr(else_expr);
+                }
+                changed
+            }
+            HirExpr::Call { args, .. } => {
+                let mut changed = false;
+                for arg in args {
+                    changed |= self.constant_fold_expr(arg);
+                }
+                changed
+            }
+            _ => false,
+        }
     }
 
     pub fn optimize_mir(&mut self, mir: &mut MirProgram) -> Result<(), OptError> {

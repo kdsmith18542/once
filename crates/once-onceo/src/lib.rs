@@ -298,12 +298,30 @@ pub fn create_module_from_hir(
     for item in &hir.items {
         match item {
             once_hir::HirItem::FnDecl(fn_decl) => {
-                // Create type summary
+                let type_variables: Vec<String> = fn_decl.type_params.iter()
+                    .map(|p| p.name.clone())
+                    .collect();
+                let constraints: Vec<TypeConstraint> = fn_decl.type_params.iter()
+                    .flat_map(|p| p.bounds.iter().map(|bound| TypeConstraint {
+                        constraint_type: ConstraintType::Equality,
+                        left: p.name.clone(),
+                        right: format!("{:?}", bound),
+                    }))
+                    .collect();
                 let type_summary = TypeSummary {
                     name: fn_decl.name.clone(),
-                    type_scheme: "Function".to_string(), // Simplified for now
-                    type_variables: Vec::new(), // TODO: Extract type variables
-                    constraints: Vec::new(), // TODO: Extract constraints
+                    type_scheme: format!("fn({}) -> {:?}", 
+                        fn_decl.params.iter()
+                            .map(|p| p.type_annotation.as_ref()
+                                .map(|t| format!("{:?}", t))
+                                .unwrap_or_else(|| "?".to_string()))
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        fn_decl.return_type.as_ref()
+                            .map(|t| format!("{:?}", t))
+                            .unwrap_or_else(|| "Unit".to_string())),
+                    type_variables,
+                    constraints,
                 };
                 builder.add_type_summary(type_summary);
             }

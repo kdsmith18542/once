@@ -77,6 +77,9 @@ impl CapabilityLinker {
             return Err(LinkerError::CircularDependency(format!("Circular dependency detected for module {}", name)));
         }
 
+        // Track dependencies for future circular checks
+        self.dependencies.insert(name.clone(), module.metadata.dependencies.clone());
+
         // Extract capability requirements
         let requirements = self.extract_capability_requirements(&module)?;
         self.capability_requirements.insert(name.clone(), requirements);
@@ -166,16 +169,16 @@ impl CapabilityLinker {
         let mut visited = HashSet::new();
         let mut stack = HashSet::new();
         
-        self.dfs_circular_check(module_name, &mut visited, &mut stack)
+        self.dfs_circular_check_with_deps(module_name, &mut visited, &mut stack, Some(dependencies))
     }
 
-    fn dfs_circular_check(&self, module_name: &str, visited: &mut HashSet<String>, stack: &mut HashSet<String>) -> bool {
+    fn dfs_circular_check_with_deps(&self, module_name: &str, visited: &mut HashSet<String>, stack: &mut HashSet<String>, pending_deps: Option<&[String]>) -> bool {
         if stack.contains(module_name) {
-            return true; // Circular dependency found
+            return true;
         }
         
         if visited.contains(module_name) {
-            return false; // Already processed
+            return false;
         }
 
         visited.insert(module_name.to_string());
@@ -183,7 +186,13 @@ impl CapabilityLinker {
 
         if let Some(deps) = self.dependencies.get(module_name) {
             for dep in deps {
-                if self.dfs_circular_check(dep, visited, stack) {
+                if self.dfs_circular_check_with_deps(dep, visited, stack, None) {
+                    return true;
+                }
+            }
+        } else if let Some(deps) = pending_deps {
+            for dep in deps {
+                if self.dfs_circular_check_with_deps(dep, visited, stack, None) {
                     return true;
                 }
             }
@@ -209,9 +218,8 @@ impl CapabilityLinker {
 
         // Extract from type summaries
         for type_summary in &module.type_summaries {
-            // TODO: Parse type scheme string to extract types
-            // For now, just add a placeholder
-            required_types.push(Type::Unit);
+            let parsed_type = self.parse_type_scheme(&type_summary.type_scheme);
+            required_types.push(parsed_type);
         }
 
         // Extract from region summaries
@@ -222,10 +230,19 @@ impl CapabilityLinker {
         }
 
         // Extract permissions from metadata
-        // TODO: Parse metadata to extract actual permissions
-        // For now, add some default permissions
-        permissions.push(Permission::Memory("heap".to_string()));
-        permissions.push(Permission::Memory("stack".to_string()));
+        for dep in &module.metadata.dependencies {
+            match dep.as_str() {
+                "fs" | "std::fs" | "io" => permissions.push(Permission::FileSystem(dep.clone())),
+                "net" | "std::net" | "http" => permissions.push(Permission::Network(dep.clone())),
+                "os" | "std::os" | "sys" => permissions.push(Permission::System(dep.clone())),
+                _ => permissions.push(Permission::Memory(dep.clone())),
+            }
+        }
+        // Always grant basic memory access
+        if permissions.is_empty() {
+            permissions.push(Permission::Memory("heap".to_string()));
+            permissions.push(Permission::Memory("stack".to_string()));
+        }
 
         Ok(CapabilityRequirements {
             required_effects,
@@ -311,9 +328,58 @@ impl CapabilityLinker {
 
     /// Check if an effect label represents a capability violation
     fn is_capability_violation(&self, label: &str) -> bool {
-        // TODO: Implement actual capability checking
-        // For now, just check for some basic violations
-        matches!(label, "FileSystem" | "Network" | "System")
+        matches!(label, "net" | "fs" | "ffi" | "spawn" | "io")
+    }
+
+    /// Parse a type scheme string (e.g. "Int -> Int", "fn(Int) -> Bool") into our Type
+    fn parse_type_scheme(&self, scheme: &str) -> Type {
+        let trimmed = scheme.trim();
+        if let Some(arrow_pos) = trimmed.find("->") {
+            let params_str = trimmed[..arrow_pos].trim();
+            let ret_str = trimmed[arrow_pos + 2..].trim();
+            let params = params_str
+                .trim_start_matches("fn(")
+                .trim_end_matches(')')
+                .split(',')
+                .filter(|s| !s.trim().is_empty())
+                .map(|s| self.parse_simple_type(s.trim()))
+                .collect::<Vec<_>>();
+            let ret = self.parse_simple_type(ret_str.trim_matches(')').trim());
+            Type::Function { params, return_type: Box::new(ret) }
+        } else {
+            self.parse_simple_type(trimmed)
+        }
+    }
+
+    fn parse_simple_type(&self, name: &str) -> Type {
+        match name {
+            "Int" => Type::Int,
+            "Bool" => Type::Bool,
+            "Float" => Type::Float,
+            "Str" => Type::Str,
+            "Unit" => Type::Unit,
+            "Result" => Type::Result {
+                ok_type: Box::new(Type::Int),
+                err_type: Box::new(Type::Str),
+            },
+            "Option" => Type::Option(Box::new(Type::Int)),
+            "Array" => Type::Array { element_type: Box::new(Type::Int), size: None },
+            other => {
+                if let Some(open) = other.find('<') {
+                    let close = other.rfind('>').unwrap_or(other.len() - 1);
+                    let name_part = &other[..open];
+                    let args_str = &other[open + 1..close];
+                    let args = args_str.split(',')
+                        .map(|s| self.parse_simple_type(s.trim()))
+                        .collect();
+                    Type::UserDefined { name: name_part.to_string(), args }
+                } else if other == "Self" || other.chars().next().map_or(false, |c| c.is_uppercase()) {
+                    Type::UserDefined { name: other.to_string(), args: vec![] }
+                } else {
+                    Type::Var(TypeVar(0))
+                }
+            }
+        }
     }
 
     /// Get capability requirements for a module
@@ -400,15 +466,15 @@ mod tests {
     fn test_circular_dependency_detection() {
         let mut linker = CapabilityLinker::new();
         
-        // Create modules with circular dependency
-        let module1 = create_test_module("module1".to_string());
-        let module2 = create_test_module("module2".to_string());
+        let mut module1 = create_test_module("module1".to_string());
+        module1.metadata.dependencies = vec!["module2".to_string()];
+        let mut module2 = create_test_module("module2".to_string());
+        module2.metadata.dependencies = vec!["module1".to_string()];
         
         linker.add_module("module1".to_string(), module1).unwrap();
-        linker.add_module("module2".to_string(), module2).unwrap();
-        
-        // TODO: Test circular dependency detection
-        // This would require setting up actual dependencies
+        let result = linker.add_module("module2".to_string(), module2);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), LinkerError::CircularDependency(_)));
     }
 
     #[test]
