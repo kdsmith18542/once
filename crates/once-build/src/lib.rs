@@ -545,6 +545,9 @@ impl BuildTool {
         // Check FFI security compliance
         self.ffi_checker.check_ffi_security()?;
 
+        // Verify capability security
+        self.verify_capabilities()?;
+
         // Build dependency graph
         self.build_dependency_graph()?;
         
@@ -695,6 +698,31 @@ impl BuildTool {
         temp_visited.remove(target_name);
         visited.insert(target_name.to_string());
         order.push(target_name.to_string());
+        
+        Ok(())
+    }
+
+    /// Verify capability security: ensure no dependency requires undeclared capabilities
+    fn verify_capabilities(&self) -> Result<(), BuildError> {
+        // Collect capabilities declared by the root package
+        let root_capabilities: HashSet<String> = self.build_graph.values()
+            .flat_map(|n| n.target.capabilities.iter().cloned())
+            .collect();
+        
+        // Standard capabilities that are always allowed
+        let safe_capabilities: HashSet<&str> = ["io", "net", "spawn", "time", "ffi", "nondet"]
+            .iter().copied().collect();
+        
+        for (name, node) in &self.build_graph {
+            for cap in &node.target.capabilities {
+                if !root_capabilities.contains(cap) && safe_capabilities.contains(cap.as_str()) {
+                    return Err(BuildError::FfiSecurityError(format!(
+                        "Target '{}' requires capability '{}' which is not declared in root [capabilities]",
+                        name, cap
+                    )));
+                }
+            }
+        }
         
         Ok(())
     }
