@@ -835,8 +835,18 @@ impl OnceLsp {
 // ================================================================
 
 use tower_lsp::jsonrpc::Result as LspResult;
-use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
+// Use module path to avoid collision with local Range/Position/Diagnostic types
+use tower_lsp::lsp_types::{
+    self,
+    InitializeParams, InitializeResult, InitializedParams, ServerCapabilities,
+    TextDocumentSyncCapability, TextDocumentSyncKind,
+    CompletionOptions, HoverProviderCapability, OneOf,
+    DidOpenTextDocumentParams, DidChangeTextDocumentParams,
+    CompletionParams, CompletionResponse,
+    HoverParams, Hover, GotoDefinitionParams, GotoDefinitionResponse,
+    Diagnostic, DiagnosticSeverity, MessageType,
+};
 use std::sync::Mutex;
 use once_lex::Lexer;
 use once_parse::OnceParser;
@@ -916,9 +926,9 @@ impl Backend {
         for t in &tokens {
             if let once_lex::Token::Error = t.token {
                 diagnostics.push(Diagnostic {
-                    range: Range {
-                        start: Position { line: t.span.line as u32, character: t.span.column as u32 },
-                        end: Position { line: t.span.line as u32, character: (t.span.column + 1) as u32 },
+                    range: lsp_types::Range {
+                        start: lsp_types::Position { line: t.span.line as u32, character: t.span.column as u32 },
+                        end: lsp_types::Position { line: t.span.line as u32, character: (t.span.column + 1) as u32 },
                     },
                     severity: Some(DiagnosticSeverity::ERROR),
                     message: "Invalid token".to_string(),
@@ -939,9 +949,9 @@ impl Backend {
                         if let Err(errors) = type_checker.check(&hir) {
                             for err in errors {
                                 diagnostics.push(Diagnostic {
-                                    range: Range {
-                                        start: Position { line: 0, character: 0 },
-                                        end: Position { line: 0, character: 1 },
+                                    range: lsp_types::Range {
+                                        start: lsp_types::Position { line: 0, character: 0 },
+                                        end: lsp_types::Position { line: 0, character: 1 },
                                     },
                                     severity: Some(DiagnosticSeverity::ERROR),
                                     message: format!("Type error: {:?}", err),
@@ -953,9 +963,9 @@ impl Backend {
                     Err(errors) => {
                         for err in errors {
                             diagnostics.push(Diagnostic {
-                                range: Range {
-                                    start: Position { line: 0, character: 0 },
-                                    end: Position { line: 0, character: 1 },
+                                range: lsp_types::Range {
+                                    start: lsp_types::Position { line: 0, character: 0 },
+                                    end: lsp_types::Position { line: 0, character: 1 },
                                 },
                                 severity: Some(DiagnosticSeverity::ERROR),
                                 message: format!("HIR error: {:?}", err),
@@ -966,11 +976,11 @@ impl Backend {
                 }
             }
             Err(err) => {
-                diagnostics.push(Diagnostic {
-                    range: Range {
-                        start: Position { line: 0, character: 0 },
-                        end: Position { line: 0, character: 1 },
-                    },
+diagnostics.push(Diagnostic {
+                range: lsp_types::Range {
+                    start: lsp_types::Position { line: 0, character: 0 },
+                    end: lsp_types::Position { line: 0, character: 1 },
+                },
                     severity: Some(DiagnosticSeverity::ERROR),
                     message: format!("Parse error: {}", err),
                     ..Default::default()

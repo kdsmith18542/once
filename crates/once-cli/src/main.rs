@@ -846,7 +846,7 @@ fn collect_doctests(source: &str) -> Vec<(usize, String)> {
             if content.starts_with("```once") {
                 in_code_block = true;
                 code_block.clear();
-            } else if content == "```" && in_code_block {
+            } else if *content == "```" && in_code_block {
                 in_code_block = false;
                 doctests.push((line_num, code_block.clone()));
             } else if in_code_block {
