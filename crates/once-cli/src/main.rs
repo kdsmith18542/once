@@ -131,6 +131,11 @@ enum Commands {
         /// Input file
         input: PathBuf,
     },
+    /// Format source file
+    Fmt {
+        /// Input file
+        input: PathBuf,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -181,6 +186,9 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::Fix { mode, input } => {
             fix_file(&mode, &input)?;
+        }
+        Commands::Fmt { input } => {
+            format_file(&input)?;
         }
     }
 
@@ -866,6 +874,24 @@ fn run_doctests(input: &PathBuf) -> anyhow::Result<()> {
     println!("\nDoctest results: {} passed, {} failed", passed, failed);
     if failed > 0 {
         anyhow::bail!("{} doctest(s) failed", failed);
+    }
+    Ok(())
+}
+
+fn format_file(input: &PathBuf) -> anyhow::Result<()> {
+    use once_parse::format;
+    
+    let source = fs::read_to_string(input)?;
+    let tokens: Vec<_> = Lexer::new(&source).collect();
+    let ast = OnceParser::parse(tokens).map_err(|e| anyhow::anyhow!("Parse error: {}", e))?;
+    
+    let formatted = format::format_program(&ast);
+    
+    if formatted != source {
+        fs::write(input, &formatted)?;
+        println!("Formatted: {}", input.display());
+    } else {
+        println!("Already formatted: {}", input.display());
     }
     Ok(())
 }

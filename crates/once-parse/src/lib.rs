@@ -9,6 +9,8 @@ use std::fmt;
 use std::iter::Peekable;
 use std::vec::IntoIter;
 
+pub mod format;
+
 /// A parsed Once program
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Program {
