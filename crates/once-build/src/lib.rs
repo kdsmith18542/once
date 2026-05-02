@@ -9,6 +9,7 @@
 //! - Dependency resolution
 //! - Build graph construction
 //! - Parallel execution
+//! - Build graph construction
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;

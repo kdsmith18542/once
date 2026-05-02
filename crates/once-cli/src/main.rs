@@ -8,6 +8,8 @@ use once_ty::TypeChecker;
 use once_ty::effects::EffectChecker;
 use once_linear::LinearityChecker;
 use once_rinf::RegionChecker;
+
+mod lint;
 use once_mir::MirGenerator;
 use once_codegen::CodeGenerator;
 use once_runtime::Runtime;
@@ -136,6 +138,11 @@ enum Commands {
         /// Input file
         input: PathBuf,
     },
+    /// Lint source file
+    Lint {
+        /// Input file
+        input: PathBuf,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -189,6 +196,9 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::Fmt { input } => {
             format_file(&input)?;
+        }
+        Commands::Lint { input } => {
+            lint_file(&input)?;
         }
     }
 
@@ -892,6 +902,28 @@ fn format_file(input: &PathBuf) -> anyhow::Result<()> {
         println!("Formatted: {}", input.display());
     } else {
         println!("Already formatted: {}", input.display());
+    }
+    Ok(())
+}
+
+fn lint_file(input: &PathBuf) -> anyhow::Result<()> {
+    let source = fs::read_to_string(input)?;
+    let tokens: Vec<_> = Lexer::new(&source).collect();
+    let ast = OnceParser::parse(tokens).map_err(|e| anyhow::anyhow!("Parse error: {}", e))?;
+    let mut builder = HirBuilder::new();
+    let hir = builder.build(ast).map_err(|e| anyhow::anyhow!("HIR error: {:?}", e))?;
+    
+    let warnings = lint::lint(&hir);
+    
+    if warnings.is_empty() {
+        println!("No issues found in: {}", input.display());
+    } else {
+        println!("Lint warnings for {}:", input.display());
+        for w in &warnings {
+            println!("  line {}: [{}] {}", w.line, 
+                match w.kind { lint::LintKind::StyleIssue => "style", _ => "warn" },
+                w.message);
+        }
     }
     Ok(())
 }
