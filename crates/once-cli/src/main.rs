@@ -217,6 +217,9 @@ fn compile_file(input: &PathBuf, output: Option<&Path>) -> anyhow::Result<()> {
     linearity_checker.check(&hir).map_err(|e| anyhow::anyhow!("Linearity error: {:?}", e))?;
     println!("Linearity checking passed");
     
+    // Run doctests from doc comments
+    let _ = run_doctests(input);
+
     // Region inference
     let mut region_checker = RegionChecker::new();
     let region_dag = region_checker.check(&hir).map_err(|e| anyhow::anyhow!("Region error: {:?}", e))?;
@@ -776,8 +779,93 @@ io = true
     println!("  once.toml - Project configuration");
     println!();
     println!("To build:");
-    println!("  cd {}", name);
-    println!("  once build");
-    
+println!("  cd {}", name);
+    println!("  once build --input main.onc");
+    Ok(())
+}
+
+/// Extract doctest code blocks from /// doc comments in a source file
+fn collect_doctests(source: &str) -> Vec<(usize, String)> {
+    let mut doctests = Vec::new();
+    let mut in_doc_comment = false;
+    let mut in_code_block = false;
+    let mut code_block = String::new();
+    let mut line_num = 0usize;
+
+    for line in source.lines() {
+        line_num += 1;
+        let trimmed = line.trim();
+
+        if trimmed.starts_with("///") {
+            in_doc_comment = true;
+            let content = &trimmed[3..].trim();
+            if content.starts_with("```once") {
+                in_code_block = true;
+                code_block.clear();
+            } else if content == "```" && in_code_block {
+                in_code_block = false;
+                doctests.push((line_num, code_block.clone()));
+            } else if in_code_block {
+                code_block.push_str(content);
+                code_block.push('\n');
+            }
+        } else {
+            in_doc_comment = false;
+        }
+    }
+    doctests
+}
+
+/// Run doctests extracted from source files
+fn run_doctests(input: &PathBuf) -> anyhow::Result<()> {
+    let source = fs::read_to_string(input)?;
+    let doctests = collect_doctests(&source);
+
+    if doctests.is_empty() {
+        println!("No doctests found.");
+        return Ok(());
+    }
+
+    println!("Running {} doctest(s) from {}", doctests.len(), input.display());
+    let mut passed = 0;
+    let mut failed = 0;
+
+    for (line, code) in &doctests {
+        print!("  doctest at line {} ... ", line);
+        let tokens: Vec<_> = Lexer::new(code).collect();
+        match OnceParser::parse(tokens) {
+            Ok(ast) => {
+                let mut builder = HirBuilder::new();
+                match builder.build(ast) {
+                    Ok(hir) => {
+                        let mut checker = TypeChecker::new();
+                        match checker.check(&hir) {
+                            Ok(()) => {
+                                println!("ok");
+                                passed += 1;
+                            }
+                            Err(errors) => {
+                                println!("FAILED (type error: {:?})", errors.first().unwrap());
+                                failed += 1;
+                            }
+                        }
+                    }
+                    Err(errors) => {
+                        println!("FAILED (HIR: {:?})", errors.first().unwrap());
+                        failed += 1;
+                    }
+                }
+            }
+            Err(err) => {
+                println!("FAILED (parse: {})", err);
+                failed += 1;
+            }
+        }
+    }
+
+    println!("\nDoctest results: {} passed, {} failed", passed, failed);
+    if failed > 0 {
+        anyhow::bail!("{} doctest(s) failed", failed);
+    }
     Ok(())
 }
