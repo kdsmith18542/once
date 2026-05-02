@@ -25,6 +25,8 @@ pub enum Token {
     Type,
     #[token("struct")]
     Struct,
+    #[token("schema")]
+    Schema,
     #[token("trait")]
     Trait,
     #[token("impl")]

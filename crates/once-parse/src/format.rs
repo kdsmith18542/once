@@ -127,6 +127,15 @@ fn format_item(item: &Item, depth: usize, out: &mut String) {
             }
             out.push(';');
         }
+        Item::SchemaDecl(s) => {
+            out.push_str(&format!("{}schema {} from {} for ", indent(depth), s.name, s.source_type));
+            format_type(&s.target_type, out);
+            out.push_str(" {\n");
+            for (field, path) in &s.fields {
+                out.push_str(&format!("{}    {}: \"{}\",\n", indent(depth), field, path));
+            }
+            out.push_str(&format!("{}}}", indent(depth)));
+        }
     }
 }
 

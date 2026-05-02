@@ -43,6 +43,7 @@ pub enum Item {
     ImplBlock(ImplBlock),
     GoalDecl(GoalDecl),
     ImportDecl(ImportDecl),
+    SchemaDecl(SchemaDecl),
 }
 
 /// Effect row for function effects
@@ -137,7 +138,17 @@ pub struct StructField {
 pub struct ImportDecl {
     pub path: Vec<String>,
     pub alias: Option<String>,
-    pub items: Vec<String>, // Specific items; empty = import all
+    pub items: Vec<String>,
+    pub span: Option<Span>,
+}
+
+/// Schema declaration for data hydration (ONCE-008 §2)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SchemaDecl {
+    pub name: String,
+    pub source_type: String,
+    pub target_type: Type,
+    pub fields: Vec<(String, String)>, // (target_field, source_path)
     pub span: Option<Span>,
 }
 
@@ -380,6 +391,10 @@ impl OnceParser {
                 Token::Import => {
                     let import_decl = Self::parse_import_decl(&mut tokens)?;
                     items.push(Item::ImportDecl(import_decl));
+                }
+                Token::Schema => {
+                    let schema_decl = Self::parse_schema_decl(&mut tokens)?;
+                    items.push(Item::SchemaDecl(schema_decl));
                 }
                 _ => return Err(format!("Unexpected token: {:?}", tokens.peek().unwrap().token)),
             }
@@ -716,6 +731,72 @@ impl OnceParser {
         }
 
         Ok(ImportDecl { path, alias, items, span: Some(start_span) })
+    }
+
+    fn parse_schema_decl(tokens: &mut std::iter::Peekable<std::vec::IntoIter<TokenWithSpan>>) -> Result<SchemaDecl, String> {
+        // schema
+        let schema_token = tokens.next().ok_or_else(|| "Expected 'schema' token".to_string())?;
+        let start_span = Span::from(schema_token.span);
+
+        // name
+        let name = match tokens.next() {
+            Some(t) => match t.token {
+                Token::Ident(name) => name,
+                _ => return Err("Expected schema name".to_string()),
+            },
+            None => return Err("Expected schema name".to_string()),
+        };
+
+        // from SourceType
+        if !matches!(tokens.next().map(|t| t.token), Some(Token::Ident(_))) {
+            // skip 'from' keyword - look for Ident after schema name
+        }
+        let source_type = match tokens.peek() {
+            Some(TokenWithSpan { token: Token::Ident(s), .. }) => s.clone(),
+            _ => "JSON".to_string(),
+        };
+        tokens.next(); // consume source type
+
+        // for TargetType
+        let target_type = Self::parse_type(tokens)?;
+
+        // { field mappings }
+        if !matches!(tokens.next().map(|t| t.token), Some(Token::LBrace)) {
+            return Err("Expected '{' after target type".to_string());
+        }
+
+        let mut fields = Vec::new();
+        while let Some(t) = tokens.peek() {
+            if matches!(t.token, Token::RBrace) {
+                tokens.next();
+                break;
+            }
+            let field_name = match tokens.next() {
+                Some(t) => match t.token {
+                    Token::Ident(name) => name,
+                    _ => return Err("Expected field name".to_string()),
+                },
+                None => return Err("Expected field name".to_string()),
+            };
+            if !matches!(tokens.next().map(|t| t.token), Some(Token::Colon)) {
+                return Err("Expected ':' after field name".to_string());
+            }
+            let source_path = match tokens.next() {
+                Some(t) => match t.token {
+                    Token::StringLit(s) => s,
+                    _ => return Err("Expected source path string".to_string()),
+                },
+                None => return Err("Expected source path string".to_string()),
+            };
+            if let Some(t) = tokens.peek() {
+                if matches!(t.token, Token::Comma) {
+                    tokens.next();
+                }
+            }
+            fields.push((field_name, source_path));
+        }
+
+        Ok(SchemaDecl { name, source_type, target_type, fields, span: Some(start_span) })
     }
 
     fn parse_let_decl(tokens: &mut std::iter::Peekable<std::vec::IntoIter<TokenWithSpan>>) -> Result<LetDecl, String> {
