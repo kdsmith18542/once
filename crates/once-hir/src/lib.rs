@@ -357,6 +357,15 @@ impl HirBuilder {
                     let hir_impl = self.resolve_impl_block(impl_block);
                     hir_items.push(HirItem::ImplBlock(hir_impl));
                 }
+                Item::ImportDecl(import) => {
+                    // Add to imports list for resolver
+                    let import_hir = Import {
+                        path: import.path.join("::"),
+                        alias: import.alias,
+                        items: import.items,
+                    };
+                    imports.push(import_hir);
+                }
                 Item::GoalDecl(goal_decl) => {
                     // Goals are lowered to function declarations for the compiler pipeline;
                     // AI solver hooks operate at a higher level.

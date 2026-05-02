@@ -40,6 +40,7 @@ pub enum Item {
     TraitDecl(TraitDecl),
     ImplBlock(ImplBlock),
     GoalDecl(GoalDecl),
+    ImportDecl(ImportDecl),
 }
 
 /// Effect row for function effects
@@ -126,6 +127,15 @@ pub struct StructDecl {
 pub struct StructField {
     pub name: String,
     pub field_type: Type,
+    pub span: Option<Span>,
+}
+
+/// Import declaration
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ImportDecl {
+    pub path: Vec<String>,
+    pub alias: Option<String>,
+    pub items: Vec<String>, // Specific items; empty = import all
     pub span: Option<Span>,
 }
 
@@ -364,6 +374,10 @@ impl OnceParser {
                 Token::Goal => {
                     let goal_decl = Self::parse_goal_decl(&mut tokens)?;
                     items.push(Item::GoalDecl(goal_decl));
+                }
+                Token::Import => {
+                    let import_decl = Self::parse_import_decl(&mut tokens)?;
+                    items.push(Item::ImportDecl(import_decl));
                 }
                 _ => return Err(format!("Unexpected token: {:?}", tokens.peek().unwrap().token)),
             }
@@ -616,6 +630,90 @@ impl OnceParser {
             body,
             span: Some(start_span),
         })
+    }
+
+    fn parse_import_decl(tokens: &mut std::iter::Peekable<std::vec::IntoIter<TokenWithSpan>>) -> Result<ImportDecl, String> {
+        // import
+        let import_token = tokens.next().ok_or_else(|| "Expected 'import' token".to_string())?;
+        let start_span = Span::from(import_token.span);
+
+        // Parse module path: ident { :: ident }...
+        let mut path = Vec::new();
+        let first = match tokens.next() {
+            Some(t) => match t.token {
+                Token::Ident(name) => name,
+                _ => return Err("Expected module path".to_string()),
+            },
+            None => return Err("Expected module path".to_string()),
+        };
+        path.push(first);
+
+        while let Some(t) = tokens.peek() {
+            if matches!(t.token, Token::ColonColon) {
+                tokens.next();
+                let next = match tokens.next() {
+                    Some(t) => match t.token {
+                        Token::Ident(name) => name,
+                        _ => return Err("Expected identifier after '::'".to_string()),
+                    },
+                    None => return Err("Expected identifier after '::'".to_string()),
+                };
+                path.push(next);
+            } else {
+                break;
+            }
+        }
+
+        // Optional 'as' alias
+        let alias = if let Some(t) = tokens.peek() {
+            if matches!(t.token, Token::As) {
+                tokens.next();
+                match tokens.next() {
+                    Some(t) => match t.token {
+                        Token::Ident(name) => Some(name),
+                        _ => return Err("Expected alias name after 'as'".to_string()),
+                    },
+                    None => None,
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Optional '{' item list
+        let mut items = Vec::new();
+        if let Some(t) = tokens.peek() {
+            if matches!(t.token, Token::LBrace) {
+                tokens.next();
+                loop {
+                    match tokens.peek() {
+                        Some(TokenWithSpan { token: Token::RBrace, .. }) => {
+                            tokens.next();
+                            break;
+                        }
+                        Some(TokenWithSpan { token: Token::Ident(name), .. }) => {
+                            items.push(name.clone());
+                            tokens.next();
+                        }
+                        Some(TokenWithSpan { token: Token::Comma, .. }) => {
+                            tokens.next();
+                        }
+                        _ => break,
+                    }
+                }
+            }
+        }
+
+        // Optional ;
+        if let Some(t) = tokens.peek() {
+            if matches!(t.token, Token::Semicolon) {
+                tokens.next();
+            }
+        }
+
+        Ok(ImportDecl { path, alias, items, span: Some(start_span) })
     }
 
     fn parse_let_decl(tokens: &mut std::iter::Peekable<std::vec::IntoIter<TokenWithSpan>>) -> Result<LetDecl, String> {
