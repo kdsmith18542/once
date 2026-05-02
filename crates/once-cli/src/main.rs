@@ -480,13 +480,39 @@ fn fix_file(mode: &str, input: &PathBuf) -> anyhow::Result<()> {
                 }
                 Err(errors) => {
                     println!("Found {} linearity issues:", errors.len());
+                    
+                    // Attempt auto-fix: insert .consume() calls
+                    let mut modified = source.clone();
+                    let mut offset = 0i64;
+                    
                     for error in &errors {
-                        println!("  - Fix needed: {:?}", error);
+                        let error_str = format!("{:?}", error);
+                        // Extract variable name from error message
+                        if let Some(var_name) = extract_variable_name(&error_str) {
+                            // Find end of block to insert consume
+                            if let Some(pos) = find_insert_position(&modified, &var_name) {
+                                let pos = (pos as i64 + offset) as usize;
+                                let consume_call = format!("\n    {}.consume();", var_name);
+                                modified.insert_str(pos, &consume_call);
+                                offset += consume_call.len() as i64;
+                                println!("  - Fixed: inserted consume for '{}'", var_name);
+                            } else {
+                                println!("  - Could not auto-fix '{}': use 'using {} = expr {{...}}'", var_name, var_name);
+                            }
+                        }
                     }
-                    println!("\nSuggestions:");
-                    println!("  - Use 'using resource = expr {{ body }}' to guarantee consumption");
-                    println!("  - Add '.consume()' call before end of scope");
-                    println!("  - Mark variable as 'aff' if at-most-once consumption is acceptable");
+                    
+                    if offset > 0 {
+                        fs::write(input, &modified)?;
+                        println!("\nApplied {} auto-fix(es) to {}", 
+                            errors.iter().filter(|e| extract_variable_name(&format!("{:?}", e)).is_some()).count(),
+                            input.display());
+                    } else {
+                        println!("\nSuggestions:");
+                        println!("  - Use 'using resource = expr {{ body }}'");
+                        println!("  - Add '.consume()' call before end of scope");
+                        println!("  - Mark variable as 'aff' for at-most-once consumption");
+                    }
                 }
             }
         }
@@ -926,4 +952,26 @@ fn lint_file(input: &PathBuf) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Extract variable name from linearity error message
+fn extract_variable_name(error: &str) -> Option<String> {
+    if let Some(start) = error.find("name: \"") {
+        let rest = &error[start + 7..];
+        if let Some(end) = rest.find('"') {
+            return Some(rest[..end].to_string());
+        }
+    }
+    if let Some(start) = error.find("value '") {
+        let rest = &error[start + 7..];
+        if let Some(end) = rest.find('\'') {
+            return Some(rest[..end].to_string());
+        }
+    }
+    None
+}
+
+/// Find position to insert a consume call
+fn find_insert_position(source: &str, _var_name: &str) -> Option<usize> {
+    source.rfind('}').map(|pos| pos - 1)
 }
