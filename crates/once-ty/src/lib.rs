@@ -1132,6 +1132,11 @@ impl TypeChecker {
             HirType::Bool => Type::Bool,
             HirType::Float => Type::Float,
             HirType::Str => Type::Str,
+            HirType::Hole => {
+                let fresh = Type::Var(self.env.fresh_var());
+                println!("  [type hole] _ inferred as type variable — will be resolved during unification");
+                fresh
+            }
             HirType::Linear(ty) => Type::Linear(Box::new(self.hir_type_to_type(ty))),
             HirType::Affine(ty) => Type::Affine(Box::new(self.hir_type_to_type(ty))),
             HirType::Array(ty, n) => Type::Array { 

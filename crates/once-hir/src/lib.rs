@@ -140,6 +140,8 @@ pub enum HirType {
     Bool,
     Float,
     Str,
+    /// Type hole: compiler infers the type
+    Hole,
     Linear(Box<HirType>),
     Affine(Box<HirType>),
     Array(Box<HirType>, usize),
@@ -611,6 +613,7 @@ fn resolve_stmt(&mut self, stmt: Stmt) -> HirStmt {
             Type::Bool => HirType::Bool,
             Type::Float => HirType::Float,
             Type::Str => HirType::Str,
+            Type::Hole => HirType::Hole,
             Type::Linear(t) => HirType::Linear(Box::new(self.resolve_type(*t))),
             Type::Affine(t) => HirType::Affine(Box::new(self.resolve_type(*t))),
             Type::Array(t, n) => HirType::Array(Box::new(self.resolve_type(*t)), n),

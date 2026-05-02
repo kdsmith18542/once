@@ -338,6 +338,7 @@ impl RealCraneliftCodegen {
             HirType::Bool => types::I64,
             // Strings and complex types are represented as pointers (i64)
             HirType::Str => types::I64,
+            HirType::Hole => types::I64, // type hole treated as i64 placeholder
             HirType::Unit => types::I64, // placeholder; used only as param maybe
             HirType::Linear(..) | HirType::Affine(..) => types::I64,
             HirType::Array(..) => types::I64,

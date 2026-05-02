@@ -371,6 +371,7 @@ impl CodeGenerator {
             once_hir::HirType::Float => Type::Float(FloatWidth::F64),
             once_hir::HirType::Bool => Type::Bool,
             once_hir::HirType::Str => Type::String,
+            once_hir::HirType::Hole => Type::Int(IntWidth::I64), // type hole placeholder
             once_hir::HirType::Ident(_name) => {
                 // TODO: Handle type aliases and user-defined types
                 Type::Int(IntWidth::I64) // Placeholder

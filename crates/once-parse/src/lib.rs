@@ -156,6 +156,8 @@ pub enum Type {
     Bool,
     Float,
     Str,
+    /// Type hole: `_` — compiler infers the type
+    Hole,
     /// Linear type: `lin T`
     Linear(Box<Type>),
     /// Affine type: `aff T`
@@ -295,6 +297,7 @@ impl fmt::Display for Type {
             Type::Bool => write!(f, "Bool"),
             Type::Float => write!(f, "Float"),
             Type::Str => write!(f, "Str"),
+            Type::Hole => write!(f, "_"),
             Type::Linear(t) => write!(f, "lin {}", t),
             Type::Affine(t) => write!(f, "aff {}", t),
             Type::Array(t, n) => write!(f, "[{}; {}]", t, n),
@@ -963,8 +966,11 @@ fn parse_param(tokens: &mut std::iter::Peekable<std::vec::IntoIter<TokenWithSpan
                     }
                 }
                 Token::Ident(name) => {
-                    let name = name;
-                    Self::parse_generic_or_ident_type(tokens, name)
+                    if name == "_" {
+                        Ok(Type::Hole)
+                    } else {
+                        Self::parse_generic_or_ident_type(tokens, name)
+                    }
                 }
                 Token::Vec => Self::parse_generic_or_ident_type(tokens, "Vec".to_string()),
                 Token::Option => Self::parse_generic_or_ident_type(tokens, "Option".to_string()),
