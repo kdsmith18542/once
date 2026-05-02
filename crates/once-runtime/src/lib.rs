@@ -900,6 +900,35 @@ impl Runtime {
         group.is_completed = true;
         Ok(results)
     }
+
+    /// Spawn an actor-managed task (bridge to once-actors)
+    pub fn spawn_actor(&mut self, _name: &str, _handler: TaskHandler) -> TaskHandle {
+        // Create a task that runs the actor message loop
+        let task = Task::new(
+            self.scheduler.next_task_id,
+            format!("actor:{}", _name),
+            vec![],
+        );
+        let id = task.id;
+        self.scheduler.next_task_id += 1;
+        self.scheduler.tasks.insert(id, task);
+        self.scheduler.registry.register(&format!("actor:{}", _name), _handler);
+        TaskHandle { id, status: TaskStatus::Pending, result: None }
+    }
+
+    /// Spawn an actor with an initialization expression
+    pub fn spawn_actor_with_init(&mut self, _name: &str, _handler: TaskHandler, _init_args: Vec<Value>) -> TaskHandle {
+        let task = Task::new(
+            self.scheduler.next_task_id,
+            format!("actor:{}", _name),
+            _init_args,
+        );
+        let id = task.id;
+        self.scheduler.next_task_id += 1;
+        self.scheduler.tasks.insert(id, task);
+        self.scheduler.registry.register(&format!("actor:{}", _name), _handler);
+        TaskHandle { id, status: TaskStatus::Pending, result: None }
+    }
 }
 
 /// Global runtime instance for C-compatible exports
