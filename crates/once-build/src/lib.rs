@@ -398,13 +398,34 @@ pub mod ai {
         /// Verify that a synthesized goal compiles and its examples pass
         pub fn verify_goal(
             &self,
-            goal_name: &str,
-            _synthesized_code: &str,
+            _goal_name: &str,
+            synthesized_code: &str,
             _examples: &[(Vec<String>, String)],
         ) -> Result<bool, BuildError> {
-            // Full verification would: parse, type-check, compile, and run examples
-            // For now, rely on the compiler's existing type/effect/linearity checks
-            // that run during normal compilation
+            // Parse the synthesized code
+            let tokens: Vec<_> = once_lex::Lexer::new(synthesized_code).collect();
+            let ast = once_parse::OnceParser::parse(tokens)
+                .map_err(|e| BuildError::BuildError(format!("Goal verification parse error: {}", e)))?;
+            
+            // Build HIR
+            let mut builder = once_hir::HirBuilder::new();
+            let hir = builder.build(ast)
+                .map_err(|e| BuildError::BuildError(format!("Goal verification HIR error: {:?}", e)))?;
+            
+            // Type check
+            let mut type_checker = once_ty::TypeChecker::new();
+            if let Err(errors) = type_checker.check(&hir) {
+                return Err(BuildError::BuildError(format!(
+                    "Goal verification type error: {:?}", errors
+                )));
+            }
+            
+            // For examples, compile each input/output pair and compare
+            // Full implementation would JIT-compile and run
+            for (_input, _expected) in _examples {
+                // TODO: Compile and run with input, compare to expected output
+            }
+            
             Ok(true)
         }
 

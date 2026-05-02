@@ -6,6 +6,10 @@ license.workspace = true
 description = "Build system for the Once language"
 
 [dependencies]
+once-lex = { path = "../once-lex" }
+once-parse = { path = "../once-parse" }
+once-hir = { path = "../once-hir" }
+once-ty = { path = "../once-ty" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
