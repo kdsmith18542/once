@@ -847,9 +847,36 @@ impl TaskGroup {
 }
 
 impl Scheduler {
+    /// Spawn a task as a child of a group
     pub fn spawn_task_in_group(&mut self, group_id: usize, function: String, args: Vec<Value>) -> TaskHandle {
         let handle = self.spawn_task(function, args);
+        // Track child in the task itself — group info is managed by the caller
         handle
+    }
+
+    /// Wait for all tasks in a group to complete (structured concurrency)
+    pub fn await_group(&mut self, group_id: usize, child_ids: &[TaskId]) -> Result<Vec<Value>, RuntimeError> {
+        let mut results = Vec::new();
+        for &child_id in child_ids {
+            let handle = TaskHandle {
+                id: child_id,
+                status: TaskStatus::Pending,
+                result: None,
+            };
+            match self.await_task(handle) {
+                Ok(value) => results.push(value),
+                Err(e) => {
+                    // Cancel remaining children on first failure
+                    for &remaining_id in child_ids.iter().filter(|&&id| id > child_id) {
+                        if let Some(task) = self.tasks.get_mut(&remaining_id) {
+                            task.status = TaskStatus::Cancelled;
+                        }
+                    }
+                    return Err(e);
+                }
+            }
+        }
+        Ok(results)
     }
 }
 
@@ -858,6 +885,20 @@ impl Runtime {
         let id = self.scheduler.next_task_id;
         self.scheduler.next_task_id += 1;
         TaskGroup::new(id)
+    }
+
+    /// Spawn a task within a group and track it
+    pub fn spawn_in_group(&mut self, group: &mut TaskGroup, function: String, args: Vec<Value>) -> TaskHandle {
+        let handle = self.scheduler.spawn_task_in_group(group.id, function, args);
+        group.children.push(handle.id);
+        handle
+    }
+
+    /// Wait for all tasks in a group — blocks until all children finish
+    pub fn await_group(&mut self, group: &mut TaskGroup) -> Result<Vec<Value>, RuntimeError> {
+        let results = self.scheduler.await_group(group.id, &group.children)?;
+        group.is_completed = true;
+        Ok(results)
     }
 }
 
