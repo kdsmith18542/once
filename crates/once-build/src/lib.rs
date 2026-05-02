@@ -315,16 +315,11 @@ pub mod ai {
         fn synthesize(&self, goal_name: &str, params: &[String], return_type: &str, constraints: &[String]) -> Result<String, BuildError>;
     }
 
-    /// Stub AI solver that returns placeholder implementations.
-    ///
-    /// In a production build this would be replaced by a call to an
-    /// external neural-symbolic solver or LLM-based synthesizer.
+/// Stub AI solver that returns placeholder implementations.
     pub struct StubAiSolver;
 
     impl AiSolver for StubAiSolver {
         fn synthesize(&self, goal_name: &str, _params: &[String], return_type: &str, _constraints: &[String]) -> Result<String, BuildError> {
-            // Produce a minimal placeholder function body so the goal
-            // compiles as a regular Once function.
             let body = match return_type {
                 "Int" => "0",
                 "Bool" => "false",
@@ -333,8 +328,101 @@ pub mod ai {
                 "Unit" => "()",
                 _ => "()",
             };
-            Ok(format!("fn {}() -> {} {{ {} }}", goal_name, return_type, body))
+            let params_str = _params.join(", ");
+            Ok(format!("fn {}({}) -> {} {{ {} }}", goal_name, params_str, return_type, body))
         }
+    }
+
+    /// HTTP-based LLM solver that calls an OpenAI-compatible API endpoint.
+    pub struct HttpAiSolver {
+        pub endpoint: String,
+        pub api_key: Option<String>,
+        pub model: String,
+    }
+
+    impl HttpAiSolver {
+        pub fn new(endpoint: String, model: String) -> Self {
+            Self { endpoint, api_key: None, model }
+        }
+
+        pub fn with_api_key(mut self, key: String) -> Self {
+            self.api_key = Some(key);
+            self
+        }
+    }
+
+    impl AiSolver for HttpAiSolver {
+        fn synthesize(&self, goal_name: &str, params: &[String], return_type: &str, constraints: &[String]) -> Result<String, BuildError> {
+            let constraints_str = if constraints.is_empty() {
+                "none".to_string()
+            } else {
+                constraints.join("; ")
+            };
+            let prompt = format!(
+                "Write a Once language function named '{}' that takes parameters ({}) and returns {}.\n\
+                 Constraints: {}\n\
+                 Return ONLY the function body in valid Once syntax. No explanations.",
+                goal_name,
+                params.join(", "),
+                return_type,
+                constraints_str
+            );
+
+            // Attempt HTTP call; fall back to stub if endpoint unavailable
+            match self.call_api(&prompt) {
+                Ok(code) => Ok(code),
+                Err(_) => {
+                    // Fall back to stub behavior
+                    StubAiSolver.synthesize(goal_name, params, return_type, constraints)
+                }
+            }
+        }
+    }
+
+    impl HttpAiSolver {
+        fn call_api(&self, prompt: &str) -> Result<String, BuildError> {
+            // Construct JSON payload
+            let body = serde_json::json!({
+                "model": self.model,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.3,
+            });
+            let body_str = serde_json::to_string(&body)
+                .map_err(|e| BuildError::BuildError(format!("JSON error: {}", e)))?;
+            let mut cmd = std::process::Command::new("curl");
+            cmd.arg("-s")
+               .arg("-X").arg("POST")
+               .arg(&self.endpoint)
+               .arg("-H").arg("Content-Type: application/json")
+               .arg("-d").arg(&body_str);
+
+            if let Some(ref key) = self.api_key {
+                let auth = format!("Authorization: Bearer {}", key);
+                cmd.arg("-H").arg(&auth);
+            }
+
+            let output = cmd.output()
+                .map_err(|e| BuildError::BuildError(format!("curl error: {}", e)))?;
+
+            if !output.status.success() {
+                return Err(BuildError::BuildError("LLM API call failed".to_string()));
+            }
+
+            let response: serde_json::Value = serde_json::from_slice(&output.stdout)
+                .map_err(|e| BuildError::BuildError(format!("Parse error: {}", e)))?;
+
+            let code = response["choices"][0]["message"]["content"]
+                .as_str()
+                .unwrap_or("")
+                .trim()
+                .to_string();
+
+            if code.is_empty() {
+                Err(BuildError::BuildError("LLM returned empty response".to_string()))
+            } else {
+                Ok(code)
+            }
+}
     }
 
     /// Goal synthesizer that manages AI solver lifecycle.
