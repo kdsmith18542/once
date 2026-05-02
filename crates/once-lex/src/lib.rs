@@ -102,6 +102,8 @@ pub enum Token {
     Const,
     #[token("continue")]
     Continue,
+    #[token("break")]
+    Break,
     #[token("export")]
     Export,
     #[token("import")]

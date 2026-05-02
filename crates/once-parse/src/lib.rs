@@ -188,6 +188,10 @@ pub enum Stmt {
     /// Using statement for linear resource management
     /// `using x = expr { body }` desugars to let + consume at end
     Using(UsingStmt),
+    /// Continue to next loop iteration
+    Continue,
+    /// Break out of current loop
+    Break,
 }
 
 /// Let statement
@@ -1055,6 +1059,20 @@ fn parse_param(tokens: &mut std::iter::Peekable<std::vec::IntoIter<TokenWithSpan
                 Token::Using => {
                     let stmt = Self::parse_using_stmt(tokens)?;
                     statements.push(Stmt::Using(stmt));
+                }
+                Token::Continue => {
+                    tokens.next();
+                    if let Some(t) = tokens.peek() {
+                        if matches!(t.token, Token::Semicolon) { tokens.next(); }
+                    }
+                    statements.push(Stmt::Continue);
+                }
+                Token::Break => {
+                    tokens.next();
+                    if let Some(t) = tokens.peek() {
+                        if matches!(t.token, Token::Semicolon) { tokens.next(); }
+                    }
+                    statements.push(Stmt::Break);
                 }
                 _ => {
                     let expr = Self::parse_expr(tokens)?;

@@ -400,6 +400,9 @@ impl MirGenerator {
                 let expr_ops = self.generate_expr(expr, temp_count)?;
                 statements.extend(expr_ops);
             }
+            HirStmt::Continue | HirStmt::Break => {
+                // Control flow — no MIR statements generated here
+            }
             HirStmt::Using(using_stmt) => {
                 // Generate init expression
                 let init_ops = self.generate_expr(&using_stmt.init, temp_count)?;

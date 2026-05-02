@@ -322,6 +322,7 @@ impl EffectChecker {
                 }
             }
             HirStmt::Expr(expr) => self.check_expr(expr),
+            HirStmt::Continue | HirStmt::Break => Ok(EffectRow::Empty),
             HirStmt::Using(using_stmt) => {
                 // Check init expression effects
                 let _init_effects = self.check_expr(&using_stmt.init)?;

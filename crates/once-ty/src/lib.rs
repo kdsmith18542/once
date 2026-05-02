@@ -877,6 +877,7 @@ impl TypeChecker {
                 }
             }
             HirStmt::Expr(expr) => self.check_expr_with_env(expr, env),
+            HirStmt::Continue | HirStmt::Break => Ok(Type::Unit),
             HirStmt::Using(using_stmt) => {
                 // Check the init expression
                 let init_type = self.check_expr_with_env(&using_stmt.init, env)?;

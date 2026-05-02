@@ -165,6 +165,10 @@ pub enum HirStmt {
     Expr(HirExpr),
     /// Using statement for linear resource management
     Using(HirUsingStmt),
+    /// Continue to next loop iteration
+    Continue,
+    /// Break out of current loop
+    Break,
 }
 
 /// Resolved let statement
@@ -546,6 +550,8 @@ fn resolve_stmt(&mut self, stmt: Stmt) -> HirStmt {
                 is_linear: true, // Using statements always involve linear resources
                 span: using_stmt.span.map(|s| (s.start, s.end)),
             }),
+            Stmt::Continue => HirStmt::Continue,
+            Stmt::Break => HirStmt::Break,
         }
     }
 
