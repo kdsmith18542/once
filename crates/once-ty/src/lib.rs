@@ -500,9 +500,17 @@ pub struct TraitDef {
     pub methods: Vec<(String, TypeScheme)>,
 }
 
+/// Record of a type hole (`_`) from source and its inferred type
+#[derive(Debug, Clone)]
+pub struct HoleInfo {
+    pub var: TypeVar,
+    pub span: Option<SourceSpan>,
+    pub inferred_type: Option<Type>,
+}
+
 /// Type checker for Once programs
 pub struct TypeChecker {
-    env: TypeEnv,
+    pub env: TypeEnv,
     errors: Vec<TypeError>,
     /// Registered trait definitions
     pub traits: HashMap<String, TraitDef>,
@@ -510,6 +518,10 @@ pub struct TypeChecker {
     pub trait_impls: Vec<TraitImpl>,
     /// Current source span for error reporting
     current_span: Option<SourceSpan>,
+    /// Tracked type holes (`_`) with their inferred types
+    pub hole_variables: Vec<HoleInfo>,
+    /// Registered struct declarations for field validation
+    pub structs: HashMap<String, HirStructDecl>,
 }
 
 impl TypeChecker {
@@ -520,6 +532,8 @@ impl TypeChecker {
             traits: HashMap::new(),
             trait_impls: Vec::new(),
             current_span: None,
+            hole_variables: Vec::new(),
+            structs: HashMap::new(),
         }
     }
 
@@ -563,6 +577,13 @@ impl TypeChecker {
     pub fn check(&mut self, hir: &HirProgram) -> Result<(), Vec<TypeError>> {
         // Add built-in types to environment
         self.add_builtin_types();
+        
+        // First pass: collect struct declarations for field validation
+        for item in &hir.items {
+            if let HirItem::StructDecl(s) = item {
+                self.structs.insert(s.name.clone(), s.clone());
+            }
+        }
         
         // Type check all items
         for item in &hir.items {
@@ -1070,13 +1091,62 @@ impl TypeChecker {
                 });
                 Ok(ok_type)
             }
-            HirExpr::Struct { name: _, fields } => {
-                // Each field's expression is checked; the struct type determined from declarations
-                for (_, val) in fields {
-                    self.check_expr_with_env(val, env)?;
+            HirExpr::Struct { name, fields } => {
+                // Look up struct declaration
+                let struct_fields: Vec<(String, HirType)> = self.structs.get(name)
+                    .map(|sd| sd.fields.iter().map(|f| (f.name.clone(), f.field_type.clone())).collect())
+                    .unwrap_or_default();
+                
+                if struct_fields.is_empty() && !self.structs.contains_key(name) {
+                    // Unknown struct - still check fields but warn
+                    for (_, val) in fields {
+                        self.check_expr_with_env(val, env)?;
+                    }
+                    return Ok(Type::UserDefined { name: name.clone(), args: vec![] });
                 }
-                // Return a placeholder struct type
-                Ok(Type::UserDefined { name: "struct".to_string(), args: vec![] })
+                
+                // Build sets for validation
+                let declared_field_names: std::collections::HashSet<String> = struct_fields.iter()
+                    .map(|(n, _)| n.clone()).collect();
+                let declared_field_types: std::collections::HashMap<String, HirType> = struct_fields.into_iter()
+                    .collect();
+                
+                // Check each provided field
+                for (field_name, field_expr) in fields {
+                    // Verify field exists in declaration
+                    if !declared_field_names.contains(field_name.as_str()) {
+                        self.errors.push(TypeError::TypeMismatch {
+                            expected: format!("field '{}' in struct '{}'", field_name, name),
+                            found: "unknown field".to_string(),
+                            span: self.current_span,
+                        });
+                        continue;
+                    }
+                    // Check field expression type matches declared type
+                    let field_type = self.check_expr_with_env(field_expr, env)?;
+                    if let Some(declared_field_type) = declared_field_types.get(field_name) {
+                        let expected_ty = self.hir_type_to_type(declared_field_type);
+                        env.add_constraint(Constraint::Equal {
+                            left: field_type,
+                            right: expected_ty,
+                        });
+                    }
+                }
+                
+                // Check that all required fields are provided
+                let provided_fields: std::collections::HashSet<String> = fields.iter()
+                    .map(|(n, _)| n.clone()).collect();
+                for declared_name in &declared_field_names {
+                    if !provided_fields.contains(declared_name.as_str()) {
+                        self.errors.push(TypeError::TypeMismatch {
+                            expected: format!("field '{}' in struct '{}'", declared_name, name),
+                            found: "missing field".to_string(),
+                            span: self.current_span,
+                        });
+                    }
+                }
+                
+                Ok(Type::UserDefined { name: name.clone(), args: vec![] })
             }
             HirExpr::FieldAccess { base, field: _ } => {
                 // Check the base expression and return the field type
@@ -1138,7 +1208,15 @@ impl TypeChecker {
             HirType::Bool => Type::Bool,
             HirType::Float => Type::Float,
             HirType::Str => Type::Str,
-            HirType::Hole => Type::Var(self.env.fresh_var()),
+            HirType::Hole => {
+                let var = self.env.fresh_var();
+                self.hole_variables.push(HoleInfo {
+                    var: var.clone(),
+                    span: self.current_span,
+                    inferred_type: None,
+                });
+                Type::Var(var)
+            }
             HirType::Linear(ty) => Type::Linear(Box::new(self.hir_type_to_type(ty))),
             HirType::Affine(ty) => Type::Affine(Box::new(self.hir_type_to_type(ty))),
             HirType::Array(ty, n) => Type::Array { 
@@ -1269,6 +1347,14 @@ impl TypeChecker {
         }
         self.env.bindings = new_bindings;
 
+        // Resolve hole types using the final substitution
+        for hole in &mut self.hole_variables {
+            let resolved = Type::Var(hole.var.clone()).apply_subst(&subst);
+            if !matches!(resolved, Type::Var(_)) {
+                hole.inferred_type = Some(resolved);
+            }
+        }
+
         if self.errors.is_empty() {
             Ok(())
         } else {
@@ -1382,6 +1468,21 @@ impl TypeChecker {
             ));
         }
         Ok(Substitution::single(var, ty.clone()))
+    }
+
+    /// Get diagnostics for resolved type holes
+    pub fn hole_diagnostics(&self) -> Vec<String> {
+        let mut diags = Vec::new();
+        for hole in &self.hole_variables {
+            if let Some(ref ty) = hole.inferred_type {
+                let loc = hole.span.map(|s| format!("{}", s)).unwrap_or_else(|| "unknown".to_string());
+                diags.push(format!("type `_` at {} inferred as {}", loc, ty));
+            } else {
+                let loc = hole.span.map(|s| format!("{}", s)).unwrap_or_else(|| "unknown".to_string());
+                diags.push(format!("type `_` at {} could not be fully resolved", loc));
+            }
+        }
+        diags
     }
 }
 

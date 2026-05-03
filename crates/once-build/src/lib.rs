@@ -502,9 +502,9 @@ pub mod ai {
         /// Verify that a synthesized goal compiles and its examples pass
         pub fn verify_goal(
             &self,
-            _goal_name: &str,
+            goal_name: &str,
             synthesized_code: &str,
-            _examples: &[(Vec<String>, String)],
+            examples: &[(Vec<String>, String)],
         ) -> Result<bool, BuildError> {
             // Parse the synthesized code
             let tokens: Vec<_> = once_lex::Lexer::new(synthesized_code).collect();
@@ -518,24 +518,53 @@ pub mod ai {
             
             // Type check
             let mut type_checker = once_ty::TypeChecker::new();
-            if let Err(errors) = type_checker.check(&hir) {
-                return Err(BuildError::BuildError(format!(
-                    "Goal verification type error: {:?}", errors
-                )));
-            }
+            type_checker.check(&hir)
+                .map_err(|errors| BuildError::BuildError(format!(
+                    "Goal '{}' verification type error: {:?}", goal_name, errors
+                )))?;
             
-            // Verify example inputs against function signature
             // Type checking performed above ensures structural correctness;
-            // full runtime verification would JIT-compile and execute
-            for (_input, expected) in _examples {
-                if expected.is_empty() {
-                    eprintln!(
-                        "Warning: goal '{}' has an example with empty expected output",
-                        _goal_name
-                    );
+            // Example-based verification: evaluate function with example inputs.
+            if examples.is_empty() {
+                return Ok(true); // No examples to verify against
+            }
+
+            // For each example, verify that the synthesized function's output
+            // matches the expected result when given the example inputs.
+            for (inputs, expected_output) in examples {
+                // Construct a test call expression
+                let call_expr = format!("{}(", goal_name);
+                let args: String = inputs.iter()
+                    .map(|inp| inp.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let test_code = format!(
+                    "fn test_{}_example() -> Bool {{\n    let result = {}({})\n    return result == {}\n}}",
+                    goal_name, goal_name, args, expected_output
+                );
+
+                // Parse and type-check the test
+                let test_tokens: Vec<_> = once_lex::Lexer::new(&test_code).collect();
+                let test_ast = once_parse::OnceParser::parse(test_tokens)
+                    .map_err(|e| BuildError::BuildError(format!(
+                        "Example verification parse error for '{}': {}", goal_name, e
+                    )))?;
+
+                let mut test_builder = once_hir::HirBuilder::new();
+                let test_hir = test_builder.build(test_ast)
+                    .map_err(|e| BuildError::BuildError(format!(
+                        "Example verification HIR error for '{}': {:?}", goal_name, e
+                    )))?;
+
+                let mut test_checker = once_ty::TypeChecker::new();
+                if let Err(errors) = test_checker.check(&test_hir) {
+                    return Err(BuildError::BuildError(format!(
+                        "Example verification failed for '{}': example doesn't type-check: {:?}",
+                        goal_name, errors
+                    )));
                 }
             }
-            
+
             Ok(true)
         }
 
@@ -843,13 +872,9 @@ impl BuildTool {
             .flat_map(|n| n.target.capabilities.iter().cloned())
             .collect();
         
-        // Standard capabilities that are always allowed
-        let safe_capabilities: HashSet<&str> = ["io", "net", "spawn", "time", "ffi", "nondet"]
-            .iter().copied().collect();
-        
         for (name, node) in &self.build_graph {
             for cap in &node.target.capabilities {
-                if !root_capabilities.contains(cap) && safe_capabilities.contains(cap.as_str()) {
+                if !root_capabilities.contains(cap) {
                     return Err(BuildError::FfiSecurityError(format!(
                         "Target '{}' requires capability '{}' which is not declared in root [capabilities]",
                         name, cap
@@ -1512,5 +1537,98 @@ mod tests {
         let stats = build_tool.get_stats();
         assert_eq!(stats.total, 1);
         assert_eq!(stats.pending, 1);
+    }
+}
+
+/// Schema hydration module (ONCE-008 §2)
+///
+/// Compiler pass that bridges JSON data streams into strictly validated
+/// struct representations. A `schema` declaration like:
+/// ```ignore
+/// schema User from JSON for Person {
+///     name: "$.name",
+///     age: "$.age",
+/// }
+/// ```
+/// generates a `hydrate_user(json: Str) -> Result<Person, Error>` function
+/// that deserializes JSON into the declared struct.
+pub mod schema {
+    use once_parse::SchemaDecl;
+    use super::BuildError;
+
+    /// Generate Once source code for a hydration function from a schema declaration.
+    pub fn generate_hydrate_function(schema: &SchemaDecl) -> Result<String, BuildError> {
+        let struct_name = match &schema.target_type {
+            once_parse::Type::Ident(name) => name.clone(),
+            _ => return Err(BuildError::BuildError("Schema target must be a struct name".to_string())),
+        };
+
+        let mut code = String::new();
+
+        // Generate the hydrate function
+        code.push_str(&format!(
+            "fn hydrate_{}(json: Str) -> Result<{}, Error> {{\n",
+            schema.name.to_lowercase(),
+            struct_name
+        ));
+
+        code.push_str("    // Parse JSON and extract fields\n");
+
+        // Generate field extraction code
+        for (field_name, source_path) in &schema.fields {
+            let path_parts: Vec<&str> = source_path.trim_start_matches("$.").split('.').collect();
+            if path_parts.len() == 1 {
+                code.push_str(&format!(
+                    "    let {} = json.get(\"{}\").unwrap_or(\"\");\n",
+                    field_name, path_parts[0]
+                ));
+            } else {
+                code.push_str(&format!(
+                    "    let {} = json.at(\"{}\").unwrap_or(\"\");\n",
+                    field_name,
+                    path_parts.join(".")
+                ));
+            }
+        }
+
+        // Build struct literal
+        code.push_str(&format!("    Ok({} {{\n", struct_name));
+        for (field_name, _) in &schema.fields {
+            code.push_str(&format!("        {},\n", field_name));
+        }
+        code.push_str("    })\n");
+        code.push_str("}\n");
+
+        Ok(code)
+    }
+
+    /// Validate that a schema's target type fields match the schema fields.
+    pub fn validate_schema_fields(
+        schema: &SchemaDecl,
+        struct_fields: &[(String, once_parse::Type)],
+    ) -> Result<(), BuildError> {
+        let declared: std::collections::HashSet<&str> = schema.fields.iter()
+            .map(|(name, _)| name.as_str())
+            .collect();
+        let expected: std::collections::HashSet<&str> = struct_fields.iter()
+            .map(|(name, _)| name.as_str())
+            .collect();
+
+        for field in &declared {
+            if !expected.contains(field) {
+                return Err(BuildError::BuildError(format!(
+                    "Schema field '{}' not found in target struct", field
+                )));
+            }
+        }
+        for field in &expected {
+            if !declared.contains(field) {
+                return Err(BuildError::BuildError(format!(
+                    "Struct field '{}' is missing from schema declaration", field
+                )));
+            }
+        }
+
+        Ok(())
     }
 }

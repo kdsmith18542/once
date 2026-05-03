@@ -323,6 +323,10 @@ fn typecheck_file(input: &PathBuf) -> anyhow::Result<()> {
     match type_checker.check(&hir) {
         Ok(()) => {
             println!("Type checking passed ✓");
+            // Report inferred types for type holes
+            for diag in type_checker.hole_diagnostics() {
+                println!("  note: {}", diag);
+            }
         }
         Err(errors) => {
             println!("Type checking failed:");
@@ -963,11 +967,21 @@ fn lint_file(input: &PathBuf) -> anyhow::Result<()> {
     if warnings.is_empty() {
         println!("No issues found in: {}", input.display());
     } else {
-        println!("Lint warnings for {}:", input.display());
+        println!("Lint warnings for {}: ({} found)", input.display(), warnings.len());
         for w in &warnings {
-            println!("  line {}: [{}] {}", w.line, 
-                match w.kind { lint::LintKind::StyleIssue => "style", _ => "warn" },
-                w.message);
+            let kind_label = match w.kind {
+                lint::LintKind::StyleIssue => "style",
+                lint::LintKind::DeadCode => "deadcode",
+                lint::LintKind::UnusedVariable => "unused",
+                lint::LintKind::UnusedImport => "unused-import",
+                lint::LintKind::LinearResourceLeak => "linear-leak",
+            };
+            print!("  line {}", w.line);
+            if w.line == 0 { print!("?"); }
+            println!(" [{}]: {}", kind_label, w.message);
+            if let Some(ref suggestion) = w.suggestion {
+                println!("    suggestion: {}", suggestion);
+            }
         }
     }
     Ok(())

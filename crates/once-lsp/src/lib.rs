@@ -954,10 +954,55 @@ impl Backend {
                                         end: lsp_types::Position { line: 0, character: 1 },
                                     },
                                     severity: Some(DiagnosticSeverity::ERROR),
-                                    message: format!("Type error: {:?}", err),
+                                    message: format!("Type error: {}", err.diagnostic()),
                                     ..Default::default()
                                 });
                             }
+                        }
+                        
+                        // Effect check — pipe to LSP
+                        let mut effect_checker = once_ty::effects::EffectChecker::new();
+                        if let Err(errors) = effect_checker.check(&hir) {
+                            for err in errors {
+                                diagnostics.push(Diagnostic {
+                                    range: lsp_types::Range {
+                                        start: lsp_types::Position { line: 0, character: 0 },
+                                        end: lsp_types::Position { line: 0, character: 1 },
+                                    },
+                                    severity: Some(DiagnosticSeverity::WARNING),
+                                    message: format!("Effect warning: {}", err.diagnostic()),
+                                    ..Default::default()
+                                });
+                            }
+                        }
+                        
+                        // Linearity check — pipe to LSP
+                        let mut linearity_checker = once_linear::LinearityChecker::new();
+                        if let Err(errors) = linearity_checker.check(&hir) {
+                            for err in errors {
+                                diagnostics.push(Diagnostic {
+                                    range: lsp_types::Range {
+                                        start: lsp_types::Position { line: 0, character: 0 },
+                                        end: lsp_types::Position { line: 0, character: 1 },
+                                    },
+                                    severity: Some(DiagnosticSeverity::WARNING),
+                                    message: format!("Linearity error: {}", err.diagnostic()),
+                                    ..Default::default()
+                                });
+                            }
+                        }
+                        
+                        // Type hole info as hints
+                        for diag in type_checker.hole_diagnostics() {
+                            diagnostics.push(Diagnostic {
+                                range: lsp_types::Range {
+                                    start: lsp_types::Position { line: 0, character: 0 },
+                                    end: lsp_types::Position { line: 0, character: 1 },
+                                },
+                                severity: Some(DiagnosticSeverity::INFORMATION),
+                                message: diag,
+                                ..Default::default()
+                            });
                         }
                     }
                     Err(errors) => {

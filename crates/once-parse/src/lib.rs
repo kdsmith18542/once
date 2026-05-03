@@ -98,6 +98,7 @@ pub struct LetDecl {
     pub name: String,
     pub type_annotation: Option<Type>,
     pub value: Expr,
+    pub mutable: bool,
     pub span: Option<Span>,
 }
 
@@ -223,6 +224,7 @@ pub struct LetStmt {
     pub name: String,
     pub type_annotation: Option<Type>,
     pub value: Expr,
+    pub mutable: bool,
     pub span: Option<Span>,
 }
 
@@ -380,8 +382,12 @@ impl OnceParser {
                     let fn_decl = Self::parse_fn_decl(&mut tokens)?;
                     items.push(Item::FnDecl(fn_decl));
                 }
-                Token::Let => {
+                Token::Let | Token::Const => {
                     let let_decl = Self::parse_let_decl(&mut tokens)?;
+                    items.push(Item::LetDecl(let_decl));
+                }
+                Token::Var => {
+                    let let_decl = Self::parse_var_decl(&mut tokens)?;
                     items.push(Item::LetDecl(let_decl));
                 }
                 Token::Goal => {
@@ -800,8 +806,8 @@ impl OnceParser {
     }
 
     fn parse_let_decl(tokens: &mut std::iter::Peekable<std::vec::IntoIter<TokenWithSpan>>) -> Result<LetDecl, String> {
-        // let
-        let let_token = tokens.next().ok_or_else(|| "Expected 'let' token".to_string())?;
+        // let or const
+        let let_token = tokens.next().ok_or_else(|| "Expected 'let' or 'const' token".to_string())?;
         let start_span = Span::from(let_token.span);
         
         // name
@@ -844,6 +850,51 @@ impl OnceParser {
             name,
             type_annotation,
             value,
+            mutable: false,
+            span: Some(start_span),
+        })
+    }
+
+    fn parse_var_decl(tokens: &mut std::iter::Peekable<std::vec::IntoIter<TokenWithSpan>>) -> Result<LetDecl, String> {
+        let var_token = tokens.next().ok_or_else(|| "Expected 'var' token".to_string())?;
+        let start_span = Span::from(var_token.span);
+        
+        let name = match tokens.next() {
+            Some(t) => match t.token {
+                Token::Ident(name) => name,
+                _ => return Err("Expected variable name".to_string()),
+            },
+            None => return Err("Expected variable name".to_string()),
+        };
+
+        let type_annotation = if let Some(t) = tokens.peek() {
+            if matches!(t.token, Token::Colon) {
+                tokens.next(); // consume :
+                Some(Self::parse_type(tokens)?)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        if !matches!(tokens.next().map(|t| t.token), Some(Token::Assign)) {
+            return Err("Expected '='".to_string());
+        }
+
+        let value = Self::parse_expr(tokens)?;
+
+        if let Some(t) = tokens.peek() {
+            if matches!(t.token, Token::Semicolon) {
+                tokens.next();
+            }
+        }
+
+        Ok(LetDecl {
+            name,
+            type_annotation,
+            value,
+            mutable: true,
             span: Some(start_span),
         })
     }
@@ -1229,8 +1280,12 @@ fn parse_param(tokens: &mut std::iter::Peekable<std::vec::IntoIter<TokenWithSpan
         while let Some(t) = tokens.peek() {
             match t.token {
                 Token::RBrace => break,
-                Token::Let => {
+                Token::Let | Token::Const => {
                     let stmt = Self::parse_let_stmt(tokens)?;
+                    statements.push(Stmt::Let(stmt));
+                }
+                Token::Var => {
+                    let stmt = Self::parse_var_stmt(tokens)?;
                     statements.push(Stmt::Let(stmt));
                 }
                 Token::Return => {
@@ -1275,8 +1330,8 @@ fn parse_param(tokens: &mut std::iter::Peekable<std::vec::IntoIter<TokenWithSpan
     }
 
     fn parse_let_stmt(tokens: &mut std::iter::Peekable<std::vec::IntoIter<TokenWithSpan>>) -> Result<LetStmt, String> {
-    // let
-    let let_token = tokens.next().ok_or_else(|| "Expected 'let' token".to_string())?;
+    // let or const
+    let let_token = tokens.next().ok_or_else(|| "Expected 'let' or 'const' token".to_string())?;
     let start_span = Span::from(let_token.span);
         
         // name
@@ -1319,6 +1374,51 @@ fn parse_param(tokens: &mut std::iter::Peekable<std::vec::IntoIter<TokenWithSpan
             name,
             type_annotation,
             value,
+            mutable: false,
+            span: Some(start_span),
+        })
+    }
+
+    fn parse_var_stmt(tokens: &mut std::iter::Peekable<std::vec::IntoIter<TokenWithSpan>>) -> Result<LetStmt, String> {
+        let var_token = tokens.next().ok_or_else(|| "Expected 'var' token".to_string())?;
+        let start_span = Span::from(var_token.span);
+        
+        let name = match tokens.next() {
+            Some(t) => match t.token {
+                Token::Ident(name) => name,
+                _ => return Err("Expected variable name".to_string()),
+            },
+            None => return Err("Expected variable name".to_string()),
+        };
+
+        let type_annotation = if let Some(t) = tokens.peek() {
+            if matches!(t.token, Token::Colon) {
+                tokens.next(); // consume :
+                Some(Self::parse_type(tokens)?)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        if !matches!(tokens.next().map(|t| t.token), Some(Token::Assign)) {
+            return Err("Expected '='".to_string());
+        }
+
+        let value = Self::parse_expr(tokens)?;
+
+        if let Some(t) = tokens.peek() {
+            if matches!(t.token, Token::Semicolon) {
+                tokens.next();
+            }
+        }
+
+        Ok(LetStmt {
+            name,
+            type_annotation,
+            value,
+            mutable: true,
             span: Some(start_span),
         })
     }

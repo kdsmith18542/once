@@ -357,7 +357,7 @@ impl HirBuilder {
                     let hir_impl = self.resolve_impl_block(impl_block);
                     hir_items.push(HirItem::ImplBlock(hir_impl));
                 }
-Item::ImportDecl(import) => {
+                Item::ImportDecl(import) => {
                     let import_hir = Import {
                         path: import.path.join("::"),
                         alias: import.alias,
@@ -378,17 +378,55 @@ Item::ImportDecl(import) => {
             }
         }
 
-        if self.errors.is_empty() {
-            let mut program_hir = HirProgram { items: hir_items, imports };
-            let resolver = ImportResolver::new();
-            if let Err(e) = resolver.resolve(&mut program_hir) {
-                self.errors.push(HirError::InvalidImport(e));
-                return Err(self.errors);
-            }
-            Ok(program_hir)
-        } else {
-            Err(self.errors)
+        // Resolve imports: load imported modules and extend the item list
+        let mut program_hir = HirProgram { items: hir_items, imports };
+        let resolver = ImportResolver::new();
+        if let Err(e) = resolver.resolve(&mut program_hir) {
+            self.errors.push(HirError::InvalidImport(e));
+            return Err(self.errors);
         }
+
+        // Register imported symbols in name context for cross-module name resolution
+        for item in &program_hir.items {
+            match item {
+                HirItem::FnDecl(f) => {
+                    let params: Vec<HirType> = f.params.iter()
+                        .map(|p| p.type_annotation.clone().unwrap_or(HirType::Unit))
+                        .collect();
+                    let _return_type = f.return_type.clone().unwrap_or(HirType::Unit);
+                    self.context.symbols.insert(f.name.clone(), Symbol::Function {
+                        name: f.name.clone(),
+                        params,
+                        return_type: f.return_type.clone().unwrap_or(HirType::Unit),
+                    });
+                }
+                HirItem::LetDecl(l) => {
+                    self.context.symbols.insert(l.name.clone(), Symbol::Variable {
+                        name: l.name.clone(),
+                        type_: l.type_annotation.clone().unwrap_or(HirType::Unit),
+                        is_linear: false,
+                    });
+                }
+                HirItem::TypeDecl(t) => {
+                    self.context.symbols.insert(t.name.clone(), Symbol::Type {
+                        name: t.name.clone(),
+                        definition: HirType::Ident(t.name.clone()),
+                    });
+                }
+                HirItem::StructDecl(s) => {
+                    self.context.symbols.insert(s.name.clone(), Symbol::Type {
+                        name: s.name.clone(),
+                        definition: HirType::Ident(s.name.clone()),
+                    });
+                }
+                _ => {}
+            }
+        }
+
+        if !self.errors.is_empty() {
+            return Err(self.errors);
+        }
+        Ok(program_hir)
     }
 
     fn resolve_generic_param(&mut self, param: once_parse::GenericParam) -> HirGenericParam {

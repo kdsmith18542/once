@@ -7,6 +7,7 @@ description = "High-level Intermediate Representation for the Once language"
 
 [dependencies]
 once-parse = { path = "../once-parse" }
+once-lex = { path = "../once-lex" }
 thiserror = { workspace = true }
 serde = { workspace = true }
 indexmap = "2.0"

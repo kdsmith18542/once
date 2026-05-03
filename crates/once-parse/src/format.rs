@@ -49,7 +49,8 @@ fn format_item(item: &Item, depth: usize, out: &mut String) {
             format_block(&f.body, depth, false, out);
         }
         Item::LetDecl(l) => {
-            out.push_str(&format!("{}let {}", indent(depth), l.name));
+            let kw = if l.mutable { "var" } else { "let" };
+            out.push_str(&format!("{}{} {}", indent(depth), kw, l.name));
             if let Some(ty) = &l.type_annotation {
                 out.push_str(": ");
                 format_type(ty, out);
@@ -202,7 +203,8 @@ fn format_block(block: &Block, depth: usize, inline: bool, out: &mut String) {
 fn format_stmt(stmt: &Stmt, depth: usize, out: &mut String) {
     match stmt {
         Stmt::Let(l) => {
-            out.push_str(&format!("{}let {}", indent(depth), l.name));
+            let kw = if l.mutable { "var" } else { "let" };
+            out.push_str(&format!("{}{} {}", indent(depth), kw, l.name));
             if let Some(ty) = &l.type_annotation {
                 out.push_str(": ");
                 format_type(ty, out);

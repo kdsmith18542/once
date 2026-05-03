@@ -922,12 +922,86 @@ impl MirGenerator {
                 });
             }
             HirExpr::Try(inner) => {
+                // `try expr` lowers to: evaluate expr, if it's Err, return Err immediately;
+                // if it's Ok, unwrap the value and continue.
                 let inner_ops = self.generate_expr(inner, temp_count)?;
                 statements.extend(inner_ops);
                 let result_temp = MirLocation::Temp(*temp_count - 1);
-                // Emit try context capture
+
+                // Create a temp for the unwrapped success value
+                let success_temp = MirLocation::Temp(*temp_count);
+                *temp_count += 1;
+
+                // Create a temp for the error value
+                let error_temp = MirLocation::Temp(*temp_count);
+                *temp_count += 1;
+
+                // Labels for control flow
+                let ok_label = self.fresh_label();
+                let err_label = self.fresh_label();
+                let end_label = self.fresh_label();
+
+                // `try` context: check if result is a Result
+                // Emit a TryBlock to instrument the error context capture
                 statements.push(MirStmt {
-                    op: MirOp::TryBlock { result: result_temp },
+                    op: MirOp::TryBlock { result: result_temp.clone() },
+                    span: Span::new(0, 0, 0, 0),
+                    region: None,
+                });
+
+                // Branch on the Result discriminant (simplified: non-zero is Err)
+                // A proper implementation would check the Result enum tag
+                statements.push(MirStmt {
+                    op: MirOp::Branch {
+                        condition: result_temp.clone(),
+                        true_target: ok_label,
+                        false_target: err_label,
+                    },
+                    span: Span::new(0, 0, 0, 0),
+                    region: None,
+                });
+
+                // Err path: extract error and return it from current function
+                statements.push(MirStmt {
+                    op: MirOp::Label { id: err_label },
+                    span: Span::new(0, 0, 0, 0),
+                    region: None,
+                });
+                // Move error to temp (result_temp holds Err variant's payload)
+                statements.push(MirStmt {
+                    op: MirOp::Move {
+                        from: result_temp.clone(),
+                        to: error_temp.clone(),
+                    },
+                    span: Span::new(0, 0, 0, 0),
+                    region: None,
+                });
+                // Early return with the error
+                statements.push(MirStmt {
+                    op: MirOp::Return { value: Some(error_temp) },
+                    span: Span::new(0, 0, 0, 0),
+                    region: None,
+                });
+
+                // Ok path: unwrap the success value
+                statements.push(MirStmt {
+                    op: MirOp::Label { id: ok_label },
+                    span: Span::new(0, 0, 0, 0),
+                    region: None,
+                });
+                // Move success value to the result temp for downstream code
+                statements.push(MirStmt {
+                    op: MirOp::Move {
+                        from: result_temp,
+                        to: success_temp.clone(),
+                    },
+                    span: Span::new(0, 0, 0, 0),
+                    region: None,
+                });
+
+                // End label
+                statements.push(MirStmt {
+                    op: MirOp::Label { id: end_label },
                     span: Span::new(0, 0, 0, 0),
                     region: None,
                 });

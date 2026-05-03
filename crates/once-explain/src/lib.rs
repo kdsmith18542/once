@@ -1,4 +1,4 @@
-use once_hir::HirProgram;
+use once_hir::{HirProgram, HirItem, HirFnDecl, HirBlock, HirStmt, HirExpr, HirLiteral};
 use once_ty::{TypeChecker, Type};
 use once_ty::effects::{EffectChecker, EffectRow};
 use once_linear::{LinearityChecker, Linearity, UsageInfo};
@@ -6,6 +6,12 @@ use once_rinf::{RegionChecker, Region};
 use once_lex::Span;
 use thiserror::Error;
 use colored::Colorize;
+
+/// Check if two spans overlap (useful for byte-range queries)
+fn spans_overlap(a: Span, b: (usize, usize)) -> bool {
+    let (b_start, b_end) = b;
+    a.start <= b_end && a.end >= b_start
+}
 
 /// Errors for explain operations
 #[derive(Error, Debug, Clone)]
@@ -176,18 +182,97 @@ impl Explainer {
         })
     }
 
-    /// Find type at a specific span
-    fn find_type_at_span(&self, _hir: &HirProgram, _span: Span) -> Result<Type, ExplainError> {
-        // Query the type checker's environment for inferred types
-        // In a full implementation, this would traverse HIR nodes at the span
-        // For now, return the first non-primitive binding found, or Int as fallback
+    /// Find type at a specific span - walks HIR to find matching expressions
+    fn find_type_at_span(&self, hir: &HirProgram, span: Span) -> Result<Type, ExplainError> {
+        // Walk HIR items looking for the expression closest to the given span
+        for item in &hir.items {
+            if let HirItem::FnDecl(fn_decl) = item {
+                if let Some(hir_span) = fn_decl.span {
+                    if spans_overlap(span, hir_span) {
+                        // Look through function body for matching expression
+                        if let Ok(ty) = self.find_type_in_block(&fn_decl.body, span) {
+                            return Ok(ty);
+                        }
+                    }
+                }
+            }
+        }
+        // Fallback: look for any user-defined type in the environment
         let env = &self.type_checker.env;
         for (name, scheme) in &env.bindings {
-            if !matches!(name.as_str(), "Unit" | "Int" | "Bool" | "Float" | "Str" | "print") {
+            if !matches!(name.as_str(), "Unit" | "Int" | "Bool" | "Float" | "Str" | "print" | "spawn") {
                 return Ok(scheme.ty.clone());
             }
         }
-        Ok(Type::Int) // fallback when no user bindings exist
+        Ok(Type::Int)
+    }
+
+    fn find_type_in_block(&self, block: &HirBlock, span: Span) -> Result<Type, ExplainError> {
+        for stmt in &block.statements {
+            if let Ok(ty) = self.find_type_in_stmt(stmt, span) {
+                return Ok(ty);
+            }
+        }
+        Err(ExplainError::SpanNotFound(format!("No type found at span {:?}", span)))
+    }
+
+    fn find_type_in_stmt(&self, stmt: &HirStmt, span: Span) -> Result<Type, ExplainError> {
+        match stmt {
+            HirStmt::Let(let_stmt) => {
+                if let Some(hir_span) = let_stmt.span {
+                    if spans_overlap(span, hir_span) {
+                        return Ok(Type::UserDefined {
+                            name: let_stmt.name.clone(),
+                            args: vec![],
+                        });
+                    }
+                }
+                self.find_type_in_expr(&let_stmt.value, span)
+            }
+            HirStmt::Return(ret) => {
+                if let Some(ref e) = ret.value {
+                    self.find_type_in_expr(e, span)
+                } else {
+                    Ok(Type::Unit)
+                }
+            }
+            HirStmt::Expr(e) => self.find_type_in_expr(e, span),
+            HirStmt::Using(u) => {
+                self.find_type_in_expr(&u.init, span)
+                    .or_else(|_| self.find_type_in_block(&u.body, span))
+            }
+            _ => Err(ExplainError::SpanNotFound("No type at this statement".to_string())),
+        }
+    }
+
+    fn find_type_in_expr(&self, expr: &HirExpr, span: Span) -> Result<Type, ExplainError> {
+        match expr {
+            HirExpr::Literal(lit) => {
+                Ok(match lit {
+                    once_hir::HirLiteral::Int(_) => Type::Int,
+                    once_hir::HirLiteral::Float(_) => Type::Float,
+                    once_hir::HirLiteral::String(_) => Type::Str,
+                    once_hir::HirLiteral::Bool(_) => Type::Bool,
+                    once_hir::HirLiteral::Unit => Type::Unit,
+                })
+            }
+            HirExpr::Ident(name) => {
+                if let Some(scheme) = self.type_checker.env.bindings.get(name) {
+                    Ok(scheme.ty.clone())
+                } else {
+                    Ok(Type::UserDefined { name: name.clone(), args: vec![] })
+                }
+            }
+            HirExpr::Call { function, .. } => {
+                if let Some(scheme) = self.type_checker.env.bindings.get(function) {
+                    Ok(scheme.ty.clone())
+                } else {
+                    Ok(Type::Int)
+                }
+            }
+            HirExpr::Block(b) => self.find_type_in_block(b, span),
+            _ => Ok(Type::Int),
+        }
     }
 
     /// Get type constraints

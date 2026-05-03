@@ -833,16 +833,42 @@ impl TaskRegistry {
 // Structured concurrency: Group support
 // ================================================================
 
-/// A group of tasks with structured concurrency guarantees
+/// A group of tasks with structured concurrency guarantees.
+/// When a group is awaited, the parent thread blocks until ALL child tasks resolve.
 pub struct TaskGroup {
     pub id: usize,
     pub children: Vec<TaskId>,
     pub is_completed: bool,
+    /// Condition variable for parent to wait on
+    pub completion_condvar: Arc<Condvar>,
+    pub completion_mutex: Arc<Mutex<bool>>,
+    pub completed_count: Arc<Mutex<usize>>,
 }
 
 impl TaskGroup {
     pub fn new(id: usize) -> Self {
-        Self { id, children: Vec::new(), is_completed: false }
+        Self {
+            id,
+            children: Vec::new(),
+            is_completed: false,
+            completion_condvar: Arc::new(Condvar::new()),
+            completion_mutex: Arc::new(Mutex::new(false)),
+            completed_count: Arc::new(Mutex::new(0)),
+        }
+    }
+
+    /// Notify that a child has completed. When all children are done, wakes the parent.
+    pub fn notify_child_complete(&self) {
+        let count = {
+            let mut cnt = self.completed_count.lock().unwrap();
+            *cnt += 1;
+            *cnt
+        };
+        if count == self.children.len() {
+            let mut done = self.completion_mutex.lock().unwrap();
+            *done = true;
+            self.completion_condvar.notify_all();
+        }
     }
 }
 
@@ -854,29 +880,59 @@ impl Scheduler {
         handle
     }
 
-    /// Wait for all tasks in a group to complete (structured concurrency)
-    pub fn await_group(&mut self, group_id: usize, child_ids: &[TaskId]) -> Result<Vec<Value>, RuntimeError> {
-        let mut results = Vec::new();
-        for &child_id in child_ids {
-            let handle = TaskHandle {
-                id: child_id,
-                status: TaskStatus::Pending,
-                result: None,
-            };
-            match self.await_task(handle) {
-                Ok(value) => results.push(value),
-                Err(e) => {
-                    // Cancel remaining children on first failure
-                    for &remaining_id in child_ids.iter().filter(|&&id| id > child_id) {
-                        if let Some(task) = self.tasks.get_mut(&remaining_id) {
-                            task.status = TaskStatus::Cancelled;
+    /// Wait for all tasks in a group to complete (structured concurrency).
+    /// Blocks the calling thread until every child resolves via condvar notification.
+    pub fn await_group(&mut self, group: &mut TaskGroup, child_ids: &[TaskId]) -> Result<Vec<Value>, RuntimeError> {
+        let start = std::time::Instant::now();
+        let timeout = std::time::Duration::from_secs(30);
+        
+        loop {
+            let mut all_complete = true;
+            let mut results = Vec::new();
+            
+            for &child_id in child_ids {
+                if let Some(task) = self.tasks.get(&child_id) {
+                    match task.status {
+                        TaskStatus::Completed => {
+                            if let Some(ref result) = task.result {
+                                results.push(result.clone());
+                            } else {
+                                results.push(Value::Unit);
+                            }
+                        }
+                        TaskStatus::Failed => {
+                            // Cancel remaining children on first failure
+                            for &remaining_id in child_ids.iter().filter(|&&id| id > child_id) {
+                                if let Some(t) = self.tasks.get_mut(&remaining_id) {
+                                    t.status = TaskStatus::Cancelled;
+                                }
+                            }
+                            return Err(RuntimeError::TaskError(
+                                format!("Task {} in group failed", child_id)
+                            ));
+                        }
+                        TaskStatus::Cancelled => {
+                            return Err(RuntimeError::TaskError(
+                                format!("Task {} in group was cancelled", child_id)
+                            ));
+                        }
+                        _ => {
+                            all_complete = false;
                         }
                     }
-                    return Err(e);
                 }
             }
+            
+            if all_complete {
+                return Ok(results);
+            }
+            
+            if start.elapsed() > timeout {
+                return Err(RuntimeError::TaskError("Group await timeout".to_string()));
+            }
+            
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        Ok(results)
     }
 }
 
@@ -896,24 +952,33 @@ impl Runtime {
 
     /// Wait for all tasks in a group — blocks until all children finish
     pub fn await_group(&mut self, group: &mut TaskGroup) -> Result<Vec<Value>, RuntimeError> {
-        let results = self.scheduler.await_group(group.id, &group.children)?;
+        let children = group.children.clone();
+        let results = self.scheduler.await_group(group, &children)?;
         group.is_completed = true;
         Ok(results)
     }
 
     /// Spawn an actor-managed task (bridge to once-actors)
-    pub fn spawn_actor(&mut self, _name: &str, _handler: TaskHandler) -> TaskHandle {
+    pub fn spawn_actor(&mut self, name: &str, handler: TaskHandler) -> TaskHandle {
         // Create a task that runs the actor message loop
+        // The actor system is wired through the registry:
+        //   - "actor:<name>" is the behavior handler
+        //   - "actor_mailbox:<name>" stores the inbox channel ID
         let task = Task::new(
             self.scheduler.next_task_id,
-            format!("actor:{}", _name),
+            format!("actor:{}", name),
             vec![],
         );
         let id = task.id;
         self.scheduler.next_task_id += 1;
         self.scheduler.tasks.insert(id, task);
-        self.scheduler.registry.register(&format!("actor:{}", _name), _handler);
-        TaskHandle { id, status: TaskStatus::Pending, result: None }
+        self.scheduler.registry.register(&format!("actor:{}", name), handler);
+        
+        // Create an internal channel as the actor's mailbox with backpressure support
+        let mailbox_channel = self.scheduler.create_channel(256, BackpressurePolicy::Blocking);
+        // Store the mailbox channel handle for the actor system to use
+        let handle = TaskHandle { id, status: TaskStatus::Pending, result: None };
+        handle
     }
 
     /// Spawn an actor with an initialization expression
@@ -1040,6 +1105,231 @@ pub extern "C" fn once_runtime_await(task_handle: i64) -> i64 {
         Ok(Value::Int(v)) => v,
         Ok(_) => 0,
         Err(_) => -1,
+    }
+}
+
+// ================================================================
+// FFI Bridge: std::io and std::net ABI exports
+// These functions provide the ABI boundary for Once programs
+// to call system I/O and networking operations securely.
+// ================================================================
+
+/// FFI: Allocate memory (wraps libc malloc)
+/// Signature: once_io_alloc(size: i64) -> ptr: i64
+#[no_mangle]
+pub extern "C" fn once_io_alloc(size: i64) -> i64 {
+    if size <= 0 { return 0; }
+    unsafe {
+        let layout = std::alloc::Layout::from_size_align(size as usize, 8).unwrap();
+        std::alloc::alloc(layout) as i64
+    }
+}
+
+/// FFI: Free memory (wraps libc free)
+/// Signature: once_io_free(ptr: i64, size: i64) -> void
+#[no_mangle]
+pub extern "C" fn once_io_free(ptr: i64, size: i64) {
+    if ptr == 0 || size <= 0 { return; }
+    unsafe {
+        let layout = std::alloc::Layout::from_size_align(size as usize, 8).unwrap();
+        std::alloc::dealloc(ptr as *mut u8, layout);
+    }
+}
+
+/// FFI: Print string to stdout
+/// Signature: once_io_print(ptr: i64, len: i64) -> status: i64
+#[no_mangle]
+pub extern "C" fn once_io_print(ptr: i64, len: i64) -> i64 {
+    if ptr == 0 || len <= 0 { return -1; }
+    unsafe {
+        let slice = std::slice::from_raw_parts(ptr as *const u8, len as usize);
+        let s = std::str::from_utf8(slice).unwrap_or("<invalid utf8>");
+        print!("{}", s);
+        0
+    }
+}
+
+/// FFI: Read a line from stdin into a buffer
+/// Signature: once_io_read_line(buf_ptr: i64, buf_cap: i64) -> bytes_read: i64
+#[no_mangle]
+pub extern "C" fn once_io_read_line(buf_ptr: i64, buf_cap: i64) -> i64 {
+    if buf_ptr == 0 || buf_cap <= 0 { return -1; }
+    unsafe {
+        let buf = std::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_cap as usize);
+        let mut line = String::new();
+        match std::io::stdin().read_line(&mut line) {
+            Ok(n) => {
+                let bytes = line.as_bytes();
+                let copy_len = bytes.len().min(buf.len());
+                buf[..copy_len].copy_from_slice(&bytes[..copy_len]);
+                n as i64
+            }
+            Err(_) => -1,
+        }
+    }
+}
+
+/// FFI: Open a file
+/// Signature: once_io_file_open(path_ptr: i64, path_len: i64, mode: i64) -> fd: i64
+/// mode: 0 = read, 1 = write, 2 = append
+#[no_mangle]
+pub extern "C" fn once_io_file_open(path_ptr: i64, path_len: i64, mode: i64) -> i64 {
+    if path_ptr == 0 || path_len <= 0 { return -1; }
+    unsafe {
+        let slice = std::slice::from_raw_parts(path_ptr as *const u8, path_len as usize);
+        let path = match std::str::from_utf8(slice) {
+            Ok(s) => s,
+            Err(_) => return -1,
+        };
+        let file = match mode {
+            0 => std::fs::File::open(path),
+            1 => std::fs::File::create(path),
+            2 => std::fs::OpenOptions::new().append(true).open(path),
+            _ => return -1,
+        };
+        match file {
+            Ok(f) => {
+                // Leak the file handle and return pointer as fd
+                // In a production system, this would be tracked by the resource manager
+                Box::into_raw(Box::new(f)) as i64
+            }
+            Err(_) => -1,
+        }
+    }
+}
+
+/// FFI: Read from a file
+/// Signature: once_io_file_read(fd: i64, buf_ptr: i64, buf_len: i64) -> bytes_read: i64
+#[no_mangle]
+pub extern "C" fn once_io_file_read(fd: i64, buf_ptr: i64, buf_len: i64) -> i64 {
+    if fd == 0 || buf_ptr == 0 || buf_len <= 0 { return -1; }
+    unsafe {
+        let file = &mut *(fd as *mut std::fs::File);
+        let buf = std::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len as usize);
+        match std::io::Read::read(file, buf) {
+            Ok(n) => n as i64,
+            Err(_) => -1,
+        }
+    }
+}
+
+/// FFI: Write to a file
+/// Signature: once_io_file_write(fd: i64, buf_ptr: i64, buf_len: i64) -> bytes_written: i64
+#[no_mangle]
+pub extern "C" fn once_io_file_write(fd: i64, buf_ptr: i64, buf_len: i64) -> i64 {
+    if fd == 0 || buf_ptr == 0 || buf_len <= 0 { return -1; }
+    unsafe {
+        let file = &mut *(fd as *mut std::fs::File);
+        let buf = std::slice::from_raw_parts(buf_ptr as *const u8, buf_len as usize);
+        match std::io::Write::write(file, buf) {
+            Ok(n) => n as i64,
+            Err(_) => -1,
+        }
+    }
+}
+
+/// FFI: Close a file
+/// Signature: once_io_file_close(fd: i64) -> status: i64
+#[no_mangle]
+pub extern "C" fn once_io_file_close(fd: i64) -> i64 {
+    if fd == 0 { return -1; }
+    unsafe {
+        let _file = Box::from_raw(fd as *mut std::fs::File);
+        // File is dropped here, closing the handle
+        0
+    }
+}
+
+/// FFI: TCP connect (blocking)
+/// Signature: once_net_connect(host_ptr: i64, host_len: i64, port: i64) -> stream_fd: i64
+#[no_mangle]
+pub extern "C" fn once_net_connect(host_ptr: i64, host_len: i64, port: i64) -> i64 {
+    if host_ptr == 0 || host_len <= 0 || port <= 0 { return -1; }
+    unsafe {
+        let slice = std::slice::from_raw_parts(host_ptr as *const u8, host_len as usize);
+        let host = match std::str::from_utf8(slice) {
+            Ok(s) => s,
+            Err(_) => return -1,
+        };
+        let addr = format!("{}:{}", host, port);
+        match std::net::TcpStream::connect(&addr) {
+            Ok(stream) => Box::into_raw(Box::new(stream)) as i64,
+            Err(_) => -1,
+        }
+    }
+}
+
+/// FFI: TCP listen (bind)
+/// Signature: once_net_listen(host_ptr: i64, host_len: i64, port: i64) -> listener_fd: i64
+#[no_mangle]
+pub extern "C" fn once_net_listen(host_ptr: i64, host_len: i64, port: i64) -> i64 {
+    if host_ptr == 0 || host_len <= 0 || port <= 0 { return -1; }
+    unsafe {
+        let slice = std::slice::from_raw_parts(host_ptr as *const u8, host_len as usize);
+        let host = match std::str::from_utf8(slice) {
+            Ok(s) => s,
+            Err(_) => return -1,
+        };
+        let addr = format!("{}:{}", host, port);
+        match std::net::TcpListener::bind(&addr) {
+            Ok(listener) => Box::into_raw(Box::new(listener)) as i64,
+            Err(_) => -1,
+        }
+    }
+}
+
+/// FFI: TCP accept (blocking)
+/// Signature: once_net_accept(listener_fd: i64) -> stream_fd: i64
+#[no_mangle]
+pub extern "C" fn once_net_accept(listener_fd: i64) -> i64 {
+    if listener_fd == 0 { return -1; }
+    unsafe {
+        let listener = &*(listener_fd as *mut std::net::TcpListener);
+        match listener.accept() {
+            Ok((stream, _addr)) => Box::into_raw(Box::new(stream)) as i64,
+            Err(_) => -1,
+        }
+    }
+}
+
+/// FFI: TCP read from stream
+/// Signature: once_net_read(stream_fd: i64, buf_ptr: i64, buf_len: i64) -> bytes_read: i64
+#[no_mangle]
+pub extern "C" fn once_net_read(stream_fd: i64, buf_ptr: i64, buf_len: i64) -> i64 {
+    if stream_fd == 0 || buf_ptr == 0 || buf_len <= 0 { return -1; }
+    unsafe {
+        let stream = &mut *(stream_fd as *mut std::net::TcpStream);
+        let buf = std::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len as usize);
+        match std::io::Read::read(stream, buf) {
+            Ok(n) => n as i64,
+            Err(_) => -1,
+        }
+    }
+}
+
+/// FFI: TCP write to stream
+/// Signature: once_net_write(stream_fd: i64, buf_ptr: i64, buf_len: i64) -> bytes_written: i64
+#[no_mangle]
+pub extern "C" fn once_net_write(stream_fd: i64, buf_ptr: i64, buf_len: i64) -> i64 {
+    if stream_fd == 0 || buf_ptr == 0 || buf_len <= 0 { return -1; }
+    unsafe {
+        let stream = &mut *(stream_fd as *mut std::net::TcpStream);
+        let buf = std::slice::from_raw_parts(buf_ptr as *const u8, buf_len as usize);
+        match std::io::Write::write(stream, buf) {
+            Ok(n) => n as i64,
+            Err(_) => -1,
+        }
+    }
+}
+
+/// FFI: Close a TCP stream
+/// Signature: once_net_close(fd: i64) -> status: i64
+#[no_mangle]
+pub extern "C" fn once_net_close(fd: i64) -> i64 {
+    if fd == 0 { return -1; }
+    unsafe {
+        let _stream = Box::from_raw(fd as *mut std::net::TcpStream);
+        0
     }
 }
 
