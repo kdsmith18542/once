@@ -45,7 +45,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
 # Compiler infrastructure
-cranelift = "0.105"
+cranelift = "0.131"
 cranelift-codegen = "0.105"
 cranelift-frontend = "0.105"
 cranelift-native = "0.105"
