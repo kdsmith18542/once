@@ -3,10 +3,11 @@
 | Document ID | ONCE-005 |
 | :---- | :---- |
 | **Title** | AI-Integration Layer & Goal-Oriented Syntax |
-| **Version** | 1.0 |
-| **Date** | 2025-10-20 |
+| **Version** | 1.1 |
+| **Date** | 2026-05-03 |
 | **Status** | Draft |
-| **Related Docs** | ONCE-001, ONCE-002 |
+| **Supersedes** | ONCE-005 v1.0 |
+| **Related Docs** | ONCE-001, ONCE-002, ONCE-006 |
 
 ## **1\. Introduction**
 
@@ -100,3 +101,144 @@ To ensure build determinism and speed, the output of the Semantic Compiler is ca
 ### **5.2. "Ejecting" to Core Code**
 
 Developers must have the ability to take manual control. IDE tooling will provide a "Convert to Core" or "Eject" command. This action replaces the goal block with its latest successfully generated Core Language fn implementation. This generated code is then checked into source control and becomes the canonical source, maintained by the developer going forward. This is useful for performance tuning or handling complex logic that the AI cannot perfectly generate.
+
+### **5.3. AI Cache**
+
+Generated implementations are cached in `target/ai-cache/` with write-through semantics. The cache key is a content hash of the goal declaration (spec, constraints, examples, type signature, and relevant type definitions). Re-compilation only re-queries the LLM when the goal declaration changes.
+
+## **6. AI & Agentic Workflow Support**
+
+Once is designed as a first-class target for LLM-based code generation and agentic tooling. The following properties make Once machine-friendly:
+
+### **6.1. Deterministic Formatting**
+
+The canonical formatter (`once fmt`) produces a single, unambiguous representation of any valid Once program. This eliminates formatting-related diffs in AI-generated or AI-edited code, making patch-based workflows reliable.
+
+### **6.2. Structured AST Output**
+
+The compiler supports `once analyze --json` to emit the full typed AST as structured JSON:
+
+```
+{
+  "file": "main.onc",
+  "items": [
+    {
+      "kind": "FnDecl",
+      "name": "sum",
+      "signature": { "params": [...], "return": "Int", "effects": [] },
+      "body": { ... }
+    }
+  ]
+}
+```
+
+This machine-readable output enables AI tools to:
+- Inspect full type and effect information without parsing source.
+- Generate patch edits with precise structural knowledge.
+- Verify that generated code meets all safety guarantees.
+
+### **6.3. No Hidden Behaviors**
+
+All side effects are explicit in function signatures via the effect system. No implicit allocations, no hidden control flow, no operator overloading surprises. An AI tool can statically determine exactly what a function can do.
+
+### **6.4. Explicit Side Effects**
+
+Effect rows in function signatures make every interaction with the outside world explicit:
+
+```
+fn fetch(url: Str) -> Str !net   // clearly marked as network I/O
+fn pure_compute(x: Int) -> Int   // guaranteed pure, no hidden effects
+```
+
+### **6.5. Stable Imports**
+
+Version-pinned absolute imports with lockfile-driven resolution guarantee deterministic dependency resolution. An AI tool can confidently reference modules without worrying about version ambiguity.
+
+### **6.6. JSON IR Output**
+
+The `once analyze --json` command outputs the full typed IR, including:
+- Resolved types for every expression
+- Inferred effect rows for every function
+- Linearity status for every binding
+- Region allocation plan for every function
+
+### **6.7. Patch-Based Edits**
+
+The structured output enables precise patch-based edits. An AI tool can generate a patch that references specific AST nodes and the compiler validates the result through the full pipeline.
+
+### **6.8. Deterministic Builds**
+
+Content-addressed caching and hermetic builds ensure that the same input always produces the same output. AI-generated code can be cached and validated deterministically.
+
+## **7. Structured Prompt Construction**
+
+When compiling a `goal` block, the compiler constructs a structured prompt for the LLM. The prompt is assembled from these components:
+
+### **7.1. Prompt Template**
+
+```json
+{
+  "system": "You are a Once language code generator. Generate valid Once Core Language code that satisfies the specification below. Follow these rules:\n- All variables are immutable by default (use `var` for mutability)\n- Resources must be consumed exactly once (use `using` for linear types)\n- Effects must match the declared signature\n- Prefer pattern matching over conditionals\n- Return the function body only, no imports or module declarations",
+  "goal": {
+    "name": "<function name>",
+    "signature": {
+      "params": [{"name": "<name>", "type": "<type>"}],
+      "return_type": "<type>",
+      "type_params": ["<T>"]
+    },
+    "spec": "<spec clause text>",
+    "constraints": [
+      "<constraint text 1>",
+      "<constraint text 2>"
+    ],
+    "examples": [
+      {"input": ["<arg1>", "<arg2>"], "output": "<expected>"}
+    ]
+  },
+  "context": {
+    "types": [/* relevant type definitions */],
+    "traits": [/* relevant trait definitions */]
+  }
+}
+```
+
+### **7.2. Synthesis Loop**
+
+The compiler implements a synthesis loop with up to 3 retry attempts:
+
+1. **Generate**: Send structured prompt to LLM, receive Once source code.
+2. **Parse**: Parse the response as Once Core Language. If parsing fails, retry with error feedback.
+3. **Type Check**: Run the type checker on the generated code. If type errors, retry with type error details.
+4. **Test**: Run examples as test cases. If tests fail, compilation fails.
+
+```
+function synthesize(goal):
+    for attempt in 1..3:
+        response = llm.generate(construct_prompt(goal, previous_errors))
+        ast = parse(response)
+        if parse_error:
+            previous_errors = format_parse_error(parse_error)
+            continue
+        type_result = typecheck(ast)
+        if type_error:
+            previous_errors = format_type_error(type_error)
+            continue
+        return ast
+    raise SynthesisFailed("Failed after 3 attempts")
+```
+
+### **7.3. Error Feedback Format**
+
+When retrying, the compiler includes structured error feedback:
+
+```json
+{
+  "attempt": 2,
+  "previous_error": {
+    "kind": "TypeError",
+    "message": "Type mismatch: expected Bool, found Int at line 3",
+    "location": { "line": 3, "column": 8 }
+  },
+  "hint": "The condition in an `if` expression must evaluate to `Bool`."
+}
+```

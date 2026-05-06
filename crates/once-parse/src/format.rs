@@ -242,15 +242,15 @@ fn format_stmt(stmt: &Stmt, depth: usize, out: &mut String) {
 
 fn format_expr(expr: &Expr, depth: usize, _inline: bool, out: &mut String) {
     match expr {
-        Expr::Literal(l) => match l {
+        Expr::Literal(l, _) => match l {
             Literal::Int(n) => out.push_str(&n.to_string()),
             Literal::Float(n) => out.push_str(&n.to_string()),
             Literal::String(s) => out.push_str(&format!("\"{}\"", s)),
             Literal::Bool(b) => out.push_str(&b.to_string()),
             Literal::Unit => out.push_str("()"),
         },
-        Expr::Ident(n) => out.push_str(n),
-        Expr::Call { function, args } => {
+        Expr::Ident(n, _) => out.push_str(n),
+        Expr::Call { function, args, .. } => {
             out.push_str(&format!("{}(", function));
             for (i, a) in args.iter().enumerate() {
                 if i > 0 { out.push_str(", "); }
@@ -258,7 +258,7 @@ fn format_expr(expr: &Expr, depth: usize, _inline: bool, out: &mut String) {
             }
             out.push(')');
         }
-        Expr::Binary { left, op, right } => {
+        Expr::Binary { left, op, right, .. } => {
             format_expr(left, depth, true, out);
             out.push(' ');
             out.push_str(match op {
@@ -279,8 +279,8 @@ fn format_expr(expr: &Expr, depth: usize, _inline: bool, out: &mut String) {
             out.push(' ');
             format_expr(right, depth, true, out);
         }
-        Expr::Block(b) => format_block(b, depth, false, out),
-        Expr::If { condition, then_branch, else_branch } => {
+        Expr::Block(b, _) => format_block(b, depth, false, out),
+        Expr::If { condition, then_branch, else_branch, .. } => {
             out.push_str("if ");
             format_expr(condition, depth, true, out);
             out.push(' ');
@@ -291,47 +291,51 @@ fn format_expr(expr: &Expr, depth: usize, _inline: bool, out: &mut String) {
                     Expr::If { .. } => {
                         format_expr(else_expr, depth, true, out);
                     }
-                    Expr::Block(b) => format_block(b, depth, false, out),
+                    Expr::Block(b, _) => format_block(b, depth, false, out),
                     _ => format_expr(else_expr, depth + 1, true, out),
                 }
             }
         }
-        Expr::Match { expr, arms } => {
+        Expr::Match { expr, arms, .. } => {
             out.push_str("match ");
             format_expr(expr, depth, true, out);
             out.push_str(" {\n");
-            for (pat, arm_expr) in arms {
+            for arm in arms {
                 out.push_str(&indent(depth + 1));
-                format_pattern(pat, out);
+                format_pattern(&arm.pattern, out);
+                if let Some(ref guard) = arm.guard {
+                    out.push_str(" if ");
+                    format_expr(guard, depth + 1, true, out);
+                }
                 out.push_str(" => ");
-                format_expr(arm_expr, depth + 1, true, out);
+                format_expr(&arm.body, depth + 1, true, out);
                 out.push_str(",\n");
             }
             out.push_str(&format!("{}}}", indent(depth)));
         }
-        Expr::For { item, collection, body } => {
+        Expr::For { item, collection, body, .. } => {
             out.push_str(&format!("for {} in ", item));
             format_expr(collection, depth, true, out);
             out.push(' ');
             format_block(body, depth, false, out);
         }
-        Expr::While { condition, body } => {
+        Expr::While { condition, body, .. } => {
             out.push_str("while ");
             format_expr(condition, depth, true, out);
             out.push(' ');
             format_block(body, depth, false, out);
         }
-        Expr::Index { base, index } => {
+        Expr::Index { base, index, .. } => {
             format_expr(base, depth, true, out);
             out.push('[');
             format_expr(index, depth, true, out);
             out.push(']');
         }
-        Expr::Try(inner) => {
+        Expr::Try(inner, _) => {
             out.push_str("try ");
             format_expr(inner, depth, true, out);
         }
-        Expr::Struct { name, fields } => {
+        Expr::Struct { name, fields, .. } => {
             out.push_str(name);
             out.push_str(" { ");
             for (i, (n, e)) in fields.iter().enumerate() {
@@ -341,7 +345,7 @@ fn format_expr(expr: &Expr, depth: usize, _inline: bool, out: &mut String) {
             }
             out.push_str(" }");
         }
-        Expr::FieldAccess { base, field } => {
+        Expr::FieldAccess { base, field, .. } => {
             format_expr(base, depth, true, out);
             out.push('.');
             out.push_str(field);
@@ -360,5 +364,14 @@ fn format_pattern(pat: &Pattern, out: &mut String) {
         },
         Pattern::Ident(n) => out.push_str(n),
         Pattern::Wildcard => out.push('_'),
+        Pattern::EnumVariant { name, fields } => {
+            out.push_str(name);
+            out.push('(');
+            for (i, f) in fields.iter().enumerate() {
+                if i > 0 { out.push_str(", "); }
+                format_pattern(f, out);
+            }
+            out.push(')');
+        }
     }
 }

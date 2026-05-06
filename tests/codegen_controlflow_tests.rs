@@ -24,12 +24,13 @@ fn test_codegen_if_else() {
                     statements: vec![
                         HirStmt::Return(HirReturnStmt {
                             value: Some(HirExpr::If {
-                                condition: Box::new(HirExpr::Literal(HirLiteral::Bool(true))),
+                                condition: Box::new(HirExpr::Literal(HirLiteral::Bool(true), None)),
                                 then_branch: HirBlock {
-                                    statements: vec![HirStmt::Expr(HirExpr::Literal(HirLiteral::Int(1)))],
+                                    statements: vec![HirStmt::Expr(HirExpr::Literal(HirLiteral::Int(1), None))],
                                     span: None,
                                 },
-                                else_branch: Some(Box::new(HirExpr::Literal(HirLiteral::Int(2)))),
+                                else_branch: Some(Box::new(HirExpr::Literal(HirLiteral::Int(2), None))),
+                                span: None,
                             }),
                             span: None,
                         }),
@@ -73,11 +74,12 @@ fn test_codegen_match() {
                     statements: vec![
                         HirStmt::Return(HirReturnStmt {
                             value: Some(HirExpr::Match {
-                                expr: Box::new(HirExpr::Literal(HirLiteral::Bool(true))),
+                                expr: Box::new(HirExpr::Literal(HirLiteral::Bool(true), None)),
                                 arms: vec![
-                                    (HirPattern::Literal(HirLiteral::Bool(true)), HirExpr::Literal(HirLiteral::Int(10))),
-                                    (HirPattern::Wildcard, HirExpr::Literal(HirLiteral::Int(0))),
+                                    (HirPattern::Literal(HirLiteral::Bool(true)), HirExpr::Literal(HirLiteral::Int(10), None)),
+                                    (HirPattern::Wildcard, HirExpr::Literal(HirLiteral::Int(0), None)),
                                 ],
+                                span: None,
                             }),
                             span: None,
                         }),
@@ -123,16 +125,18 @@ fn test_codegen_for_loop() {
                     statements: vec![
                         HirStmt::Expr(HirExpr::For {
                             item: "x".to_string(),
-                            collection: Box::new(HirExpr::Literal(HirLiteral::Int(1))),
+                            collection: Box::new(HirExpr::Literal(HirLiteral::Int(1), None)),
                             body: HirBlock {
                                 statements: vec![
                                     HirStmt::Expr(HirExpr::Call {
                                         function: "print".to_string(),
-                                        args: vec![HirExpr::Literal(HirLiteral::Int(42))],
+                                        args: vec![HirExpr::Literal(HirLiteral::Int(42), None)],
+                                        span: None,
                                     }),
                                 ],
                                 span: None,
                             },
+                            span: None,
                         }),
                         HirStmt::Return(HirReturnStmt { value: None, span: None }),
                     ],

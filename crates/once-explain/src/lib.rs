@@ -1,16 +1,15 @@
-use once_hir::{HirProgram, HirItem, HirFnDecl, HirBlock, HirStmt, HirExpr, HirLiteral};
+use once_hir::{HirProgram, HirItem, HirBlock, HirStmt, HirExpr, HirSpan};
 use once_ty::{TypeChecker, Type};
 use once_ty::effects::{EffectChecker, EffectRow};
 use once_linear::{LinearityChecker, Linearity, UsageInfo};
-use once_rinf::{RegionChecker, Region};
+use once_rinf::{RegionChecker, Region, RegionDag};
 use once_lex::Span;
 use thiserror::Error;
 use colored::Colorize;
 
 /// Check if two spans overlap (useful for byte-range queries)
-fn spans_overlap(a: Span, b: (usize, usize)) -> bool {
-    let (b_start, b_end) = b;
-    a.start <= b_end && a.end >= b_start
+fn spans_overlap(a: Span, b: HirSpan) -> bool {
+    a.start <= b.end && a.end >= b.start
 }
 
 /// Errors for explain operations
@@ -74,6 +73,7 @@ pub struct Explainer {
     effects_checker: EffectChecker,
     linearity_checker: LinearityChecker,
     region_checker: RegionChecker,
+    cached_dag: Option<RegionDag>,
 }
 
 impl Explainer {
@@ -83,6 +83,7 @@ impl Explainer {
             effects_checker: EffectChecker::new(),
             linearity_checker: LinearityChecker::new(),
             region_checker: RegionChecker::new(),
+            cached_dag: None,
         }
     }
 
@@ -157,9 +158,10 @@ impl Explainer {
 
     /// Explain regions at a specific span
     pub fn explain_regions(&mut self, hir: &HirProgram, span: Span) -> Result<RegionExplanation, ExplainError> {
-        // Run region checking
-        self.region_checker.check(hir)
+        // Run region checking and cache the DAG
+        let dag = self.region_checker.check(hir)
             .map_err(|e| ExplainError::RegionInferenceError(format!("{:?}", e)))?;
+        self.cached_dag = Some(dag);
 
         // Find the region at the given span
         let region = self.find_region_at_span(hir, span)?;
@@ -247,7 +249,7 @@ impl Explainer {
 
     fn find_type_in_expr(&self, expr: &HirExpr, span: Span) -> Result<Type, ExplainError> {
         match expr {
-            HirExpr::Literal(lit) => {
+            HirExpr::Literal(lit, _) => {
                 Ok(match lit {
                     once_hir::HirLiteral::Int(_) => Type::Int,
                     once_hir::HirLiteral::Float(_) => Type::Float,
@@ -256,7 +258,7 @@ impl Explainer {
                     once_hir::HirLiteral::Unit => Type::Unit,
                 })
             }
-            HirExpr::Ident(name) => {
+            HirExpr::Ident(name, _) => {
                 if let Some(scheme) = self.type_checker.env.bindings.get(name) {
                     Ok(scheme.ty.clone())
                 } else {
@@ -270,7 +272,7 @@ impl Explainer {
                     Ok(Type::Int)
                 }
             }
-            HirExpr::Block(b) => self.find_type_in_block(b, span),
+            HirExpr::Block(b, _) => self.find_type_in_block(b, span),
             _ => Ok(Type::Int),
         }
     }
@@ -300,12 +302,24 @@ impl Explainer {
         reasoning
     }
 
-    /// Find effect at a specific span
-    fn find_effect_at_span(&self, _hir: &HirProgram, _span: Span) -> Result<EffectRow, ExplainError> {
-        // Query the effect checker for inferred effects
-        // Return effects from the checker's environment
+    /// Find effect at a specific span by looking up the enclosing function
+    fn find_effect_at_span(&self, hir: &HirProgram, span: Span) -> Result<EffectRow, ExplainError> {
+        let fn_name = self.find_enclosing_function(hir, span)?;
+
+        // Look up effect row by function name
         let env = &self.effects_checker.env;
-        if let Some(effects) = &env.effects.last() {
+        if let Some(effects) = env.bindings.get(&fn_name) {
+            return Ok(effects.clone());
+        }
+
+        // Try with "fn_" prefix
+        let prefixed = format!("fn_{}", fn_name);
+        if let Some(effects) = env.bindings.get(&prefixed) {
+            return Ok(effects.clone());
+        }
+
+        // Fallback: return first binding if any
+        if let Some((_name, effects)) = env.bindings.iter().next() {
             return Ok(effects.clone());
         }
         Ok(EffectRow::Empty)
@@ -348,20 +362,44 @@ impl Explainer {
         reasoning
     }
 
-    /// Find linearity at a specific span
-    fn find_linearity_at_span(&self, _hir: &HirProgram, _span: Span) -> Result<(String, Linearity, UsageInfo), ExplainError> {
-        // Query the linearity checker for variable usage
+    /// Find linearity at a specific span by matching against UsageInfo spans
+    fn find_linearity_at_span(&self, _hir: &HirProgram, span: Span) -> Result<(String, Linearity, UsageInfo), ExplainError> {
         let env = &self.linearity_checker.env;
+
+        // Try to find a variable whose usage spans contain the query span
+        for (name, usage) in &env.variables {
+            let in_range = match (usage.first_use, usage.last_use) {
+                (Some(first), Some(last)) => {
+                    span.start >= first.start && span.end <= last.end
+                }
+                (Some(first), None) => {
+                    span.start >= first.start && span.start <= first.end
+                }
+                _ => false,
+            };
+            if in_range {
+                return Ok((name.clone(), usage.linearity.clone(), usage.clone()));
+            }
+        }
+
+        // Fallback: return first variable with span information
+        for (name, usage) in &env.variables {
+            if usage.first_use.is_some() || usage.last_use.is_some() {
+                return Ok((name.clone(), usage.linearity.clone(), usage.clone()));
+            }
+        }
+
+        // Final fallback: any variable
         for (name, usage) in &env.variables {
             return Ok((name.clone(), usage.linearity.clone(), usage.clone()));
         }
-        // Fallback when no variables tracked
+
         Ok((
             "<unknown>".to_string(),
-            Linearity::Unrestricted,
+            Linearity::NonLinear,
             UsageInfo {
                 variable: "<none>".to_string(),
-                linearity: Linearity::Unrestricted,
+                linearity: Linearity::NonLinear,
                 usage_count: 0,
                 first_use: None,
                 last_use: None,
@@ -383,14 +421,42 @@ impl Explainer {
         reasoning
     }
 
-    /// Find region at a specific span
-    fn find_region_at_span(&self, _hir: &HirProgram, _span: Span) -> Result<Region, ExplainError> {
-        // Simplified - in a real implementation, this would traverse the HIR
-        Ok(Region {
-            id: 1,
-            name: "r1".to_string(),
-            is_primary: true,
-        })
+    /// Find region at a specific span by walking the region DAG
+    fn find_region_at_span(&self, hir: &HirProgram, span: Span) -> Result<Region, ExplainError> {
+        let enclosing_fn = self.find_enclosing_function(hir, span)?;
+
+        if let Some(ref dag) = self.cached_dag {
+            for (region, _node) in dag.nodes.iter() {
+                if region.name == format!("fn_{}", enclosing_fn) {
+                    return Ok(region.clone());
+                }
+            }
+            for (region, _node) in dag.nodes.iter() {
+                return Ok(region.clone());
+            }
+        }
+
+        Ok(Region { id: 1, name: enclosing_fn, is_primary: true })
+    }
+
+    /// Walk HIR to find the enclosing function name at a given span
+    fn find_enclosing_function(&self, hir: &HirProgram, _span: Span) -> Result<String, ExplainError> {
+        for item in &hir.items {
+            if let HirItem::FnDecl(fn_decl) = item {
+                if let Some(hs) = fn_decl.span {
+                    if hs.start <= _span.start && _span.end <= hs.end {
+                        return Ok(fn_decl.name.clone());
+                    }
+                }
+            }
+        }
+        // Fallback: return first function name
+        for item in &hir.items {
+            if let HirItem::FnDecl(fn_decl) = item {
+                return Ok(fn_decl.name.clone());
+            }
+        }
+        Ok("main".to_string())
     }
 
     /// Get region constraints
@@ -399,7 +465,15 @@ impl Explainer {
     }
 
     /// Get escape analysis
-    fn get_escape_analysis(&self, _region: &Region) -> Vec<String> {
+    fn get_escape_analysis(&self, region: &Region) -> Vec<String> {
+        if let Some(ref dag) = self.cached_dag {
+            if let Some(node) = dag.nodes.get(region) {
+                if node.escapes.is_empty() {
+                    return vec!["No escapes detected".to_string()];
+                }
+                return node.escapes.clone();
+            }
+        }
         vec!["No escapes detected".to_string()]
     }
 
@@ -569,8 +643,9 @@ mod tests {
             items: vec![
                 HirItem::FnDecl(HirFnDecl {
                     name: "main".to_string(),
+                    type_params: vec![],
                     params: vec![],
-                    return_type: None,
+                    return_type: Some(once_hir::HirType::Unit),
                     effects: None,
                     body: HirBlock {
                         statements: vec![],

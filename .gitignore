@@ -54,3 +54,19 @@ coverage/
 # Backup files
 *.bak
 *.backup
+
+# Build output logs
+build_err.txt
+build_errors.txt
+full_build.txt
+full_test_output.txt
+
+# Debug files
+debug_lexer.rs
+old_cranelift.rs
+
+# Tooling directories
+.kilo/
+.kilocode/
+.zencoder/
+.zenflow/

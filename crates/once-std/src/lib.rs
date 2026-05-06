@@ -1141,44 +1141,59 @@ impl OnceClone for Instant {
 /// Linear deadline type for timeout management
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Deadline {
-    instant: Instant,
+    deadline: StdInstant,
     is_linear: bool,
 }
 
 impl Deadline {
     pub fn new(instant: Instant) -> Self {
         Self {
-            instant,
+            deadline: instant.instant,
             is_linear: true,
         }
     }
 
+    /// Create a deadline `duration` from now
     pub fn from_now(duration: Duration) -> Self {
-        let now = Instant::now();
-        // Note: This is a simplified implementation
-        // In a real implementation, we'd need to handle the duration addition
+        let deadline = StdInstant::now() + duration.duration;
         Self {
-            instant: now,
+            deadline,
             is_linear: true,
         }
     }
 
-    pub fn is_expired(&self) -> bool {
-        self.instant.elapsed().duration > StdDuration::from_secs(0)
+    /// Check if the deadline has passed
+    pub fn has_passed(&self) -> bool {
+        StdInstant::now() >= self.deadline
     }
 
+    /// Check if the deadline is expired (alias for has_passed)
+    pub fn is_expired(&self) -> bool {
+        self.has_passed()
+    }
+
+    /// Get remaining duration until deadline, or None if expired
     pub fn remaining(&self) -> std::option::Option<Duration> {
-        if self.is_expired() {
+        let now = StdInstant::now();
+        if now >= self.deadline {
             std::option::Option::None
         } else {
-            std::option::Option::Some(self.instant.elapsed())
+            let remaining = self.deadline.duration_since(now);
+            std::option::Option::Some(Duration {
+                duration: remaining,
+                is_linear: true,
+            })
         }
     }
 
+    /// Extend the deadline by a duration
     pub fn extend(&mut self, duration: Duration) -> std::result::Result<(), StdError> {
-        // In a real implementation, we'd add the duration to the instant
-        // For now, this is a placeholder
-        std::result::Result::Ok(())
+        if let Some(new_deadline) = self.deadline.checked_add(duration.duration) {
+            self.deadline = new_deadline;
+            std::result::Result::Ok(())
+        } else {
+            std::result::Result::Err(StdError::TypeError("Duration overflow".to_string()))
+        }
     }
 }
 
@@ -1204,7 +1219,7 @@ impl Resource for Deadline {
 impl Copy for Deadline {
     fn copy(&self) -> Self {
         Self {
-            instant: self.instant.copy(),
+            deadline: self.deadline,
             is_linear: false, // Copy creates a non-linear value
         }
     }

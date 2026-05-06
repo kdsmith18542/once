@@ -161,7 +161,7 @@ impl BoundsChecker {
             HirStmt::Expr(expr) => {
                 self.check_expr(expr)?;
             }
-            HirStmt::Continue | HirStmt::Break => {}
+            HirStmt::Continue(_) | HirStmt::Break(_) => {}
             HirStmt::Using(using_stmt) => {
                 self.check_expr(&using_stmt.init)?;
                 self.check_block(&using_stmt.body)?;
@@ -173,33 +173,33 @@ impl BoundsChecker {
     /// Check bounds for an expression
     fn check_expr(&mut self, expr: &HirExpr) -> Result<(), BoundsError> {
         match expr {
-            HirExpr::Binary { left, op: _, right } => {
+            HirExpr::Binary { left, op: _, right, .. } => {
                 self.check_expr(left)?;
                 self.check_expr(right)?;
             }
-            HirExpr::Call { function: _, args } => {
+            HirExpr::Call { function: _, args, .. } => {
                 for arg in args {
                     self.check_expr(arg)?;
                 }
             }
-            HirExpr::If { condition, then_branch, else_branch } => {
+            HirExpr::If { condition, then_branch, else_branch, .. } => {
                 self.check_expr(condition)?;
                 self.check_block(then_branch)?;
                 if let Some(else_expr) = else_branch {
                     self.check_expr(else_expr)?;
                 }
             }
-            HirExpr::Match { expr, arms } => {
+            HirExpr::Match { expr, arms, .. } => {
                 self.check_expr(expr)?;
-                for (_, arm_expr) in arms {
-                    self.check_expr(arm_expr)?;
+                for arm in arms {
+                    self.check_expr(&arm.body)?;
                 }
             }
             HirExpr::For { collection, body, .. } => {
                 self.check_expr(collection)?;
                 self.check_block(body)?;
             }
-            HirExpr::Block(block) => {
+            HirExpr::Block(block, _) => {
                 self.check_block(block)?;
             }
             _ => {} // Other expressions don't need bounds checking yet
@@ -314,7 +314,7 @@ impl BoundsChecker {
         // Add non-negative constraint
         constraints.push(BoundsConstraint {
             variable: self.extract_variable_name(index),
-                        lower_bound: Some(HirExpr::Literal(HirLiteral::Int(0))),
+                        lower_bound: Some(HirExpr::Literal(HirLiteral::Int(0), None)),
             upper_bound: None,
             constraint_type: ConstraintType::NonNegative,
         });
@@ -326,6 +326,7 @@ impl BoundsChecker {
             upper_bound: Some(HirExpr::Call {
                 function: "len".to_string(),
                 args: vec![array.clone()],
+                span: None,
             }),
             constraint_type: ConstraintType::LessThanLength,
         });
@@ -347,7 +348,7 @@ impl BoundsChecker {
     /// Get constant value from expression
     fn get_constant_value(&self, expr: &HirExpr) -> Option<usize> {
         match expr {
-            HirExpr::Literal(HirLiteral::Int(value)) => Some(*value as usize),
+            HirExpr::Literal(HirLiteral::Int(value), _) => Some(*value as usize),
             _ => None,
         }
     }
@@ -355,14 +356,14 @@ impl BoundsChecker {
     /// Extract variable name from expression
     fn extract_variable_name(&self, expr: &HirExpr) -> String {
         match expr {
-            HirExpr::Ident(name) => name.clone(),
+            HirExpr::Ident(name, _) => name.clone(),
             _ => "unknown".to_string(),
         }
     }
 
     fn extract_span_from_expr(&self, expr: &HirExpr) -> Span {
         match expr {
-            HirExpr::Block(HirBlock { span: Some((start, end)), .. }) => Span { start: *start, end: *end, line: 0, column: 0 },
+            HirExpr::Block(HirBlock { span: Some(hs), .. }, _) => Span { start: hs.start, end: hs.end, line: hs.line, column: hs.column },
             _ => Span { start: 0, end: 0, line: 0, column: 0 },
         }
     }
@@ -421,8 +422,8 @@ mod tests {
         checker.known_array_lengths.insert("arr".to_string(), 10);
         
         // Test constant array access
-        let array = HirExpr::Ident("arr".to_string());
-        let index = HirExpr::Literal(HirLiteral::Int(5));
+        let array = HirExpr::Ident("arr".to_string(), None);
+        let index = HirExpr::Literal(HirLiteral::Int(5), None);
         
         let proof = checker.generate_array_access_proof(&array, &index).unwrap();
         assert!(proof.is_some());

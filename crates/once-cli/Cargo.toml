@@ -16,6 +16,7 @@ once-hir = { path = "../once-hir" }
 once-ty = { path = "../once-ty" }
 once-linear = { path = "../once-linear" }
 once-rinf = { path = "../once-rinf" }
+once-explain = { path = "../once-explain" }
 once-mir = { path = "../once-mir" }
 once-codegen = { path = "../once-codegen" }
 once-runtime = { path = "../once-runtime" }
@@ -25,4 +26,6 @@ once-lsp = { path = "../once-lsp" }
 clap = { workspace = true }
 indicatif = { workspace = true }
 anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde_json = { workspace = true }
 tokio = { workspace = true }

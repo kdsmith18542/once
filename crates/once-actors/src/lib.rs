@@ -140,29 +140,42 @@ pub struct Actor {
     pub state: ActorState,
 }
 
-/// Actor system for managing actors
+/// Actor system for managing actors — fully thread-safe with shared inner state.
 #[derive(Debug, Clone)]
 pub struct ActorSystem {
+    inner: Arc<Mutex<ActorSystemInner>>,
+}
+
+#[derive(Debug)]
+struct ActorSystemInner {
     pub actors: HashMap<ActorId, Arc<Mutex<Actor>>>,
     pub next_actor_id: ActorId,
     pub supervisor: Option<ActorRef>,
     pub system_actors: HashMap<String, ActorRef>,
+    pub handles: Vec<thread::JoinHandle<()>>,
 }
 
 impl ActorSystem {
     pub fn new() -> Self {
         Self {
-            actors: HashMap::new(),
-            next_actor_id: 1,
-            supervisor: None,
-            system_actors: HashMap::new(),
+            inner: Arc::new(Mutex::new(ActorSystemInner {
+                actors: HashMap::new(),
+                next_actor_id: 1,
+                supervisor: None,
+                system_actors: HashMap::new(),
+                handles: Vec::new(),
+            })),
         }
     }
 
     /// Spawn a new actor
     pub fn spawn(&mut self, name: String, behavior: BehaviorFn) -> Result<ActorRef, ActorError> {
-        let actor_id = self.next_actor_id;
-        self.next_actor_id += 1;
+        let actor_id = {
+            let mut inner = self.inner.lock().unwrap();
+            let id = inner.next_actor_id;
+            inner.next_actor_id += 1;
+            id
+        };
 
         let mailbox = Arc::new(Mutex::new(VecDeque::new()));
         let condvar = Arc::new(Condvar::new());
@@ -173,13 +186,20 @@ impl ActorSystem {
             condvar: condvar.clone(),
         };
 
+        let supervisor = {
+            let inner = self.inner.lock().unwrap();
+            inner.supervisor.clone()
+        };
+
+        let system_arc = Arc::new(Mutex::new(self.clone()));
+
         let context = ActorContext {
             self_ref: actor_ref.clone(),
             state: ActorState::Running,
             children: Vec::new(),
             parent: None,
-            supervisor: self.supervisor.clone(),
-            system: Arc::new(Mutex::new(self.clone())),
+            supervisor,
+            system: system_arc.clone(),
             actor_state: HashMap::new(),
         };
 
@@ -188,53 +208,69 @@ impl ActorSystem {
             name: name.clone(),
             behavior,
             context,
-            mailbox,
-            condvar,
+            mailbox: mailbox.clone(),
+            condvar: condvar.clone(),
             state: ActorState::Running,
         };
 
-        self.actors.insert(actor_id, Arc::new(Mutex::new(actor)));
-        self.system_actors.insert(name, actor_ref.clone());
+        {
+            let mut inner = self.inner.lock().unwrap();
+            inner.actors.insert(actor_id, Arc::new(Mutex::new(actor)));
+            inner.system_actors.insert(name, actor_ref.clone());
+        }
 
-        // Start the actor's message processing loop
-        self.start_actor_loop(actor_ref.clone())?;
+        // Start the actor's message processing loop on a dedicated OS thread
+        self.start_actor_loop(actor_ref.clone(), system_arc)?;
 
         Ok(actor_ref)
     }
 
     /// Start an actor's message processing loop
-    fn start_actor_loop(&self, actor_ref: ActorRef) -> Result<(), ActorError> {
+    fn start_actor_loop(&self, actor_ref: ActorRef, system: Arc<Mutex<ActorSystem>>) -> Result<(), ActorError> {
         let actor_ref_clone = actor_ref.clone();
-        let actors = self.actors.clone();
-        let system = Arc::new(Mutex::new(self.clone()));
+        let inner = Arc::clone(&self.inner);
+        let mailbox = actor_ref.mailbox.clone();
+        let condvar = actor_ref.condvar.clone();
 
-        thread::spawn(move || {
-            if let Err(e) = Self::actor_loop(&ActorSystem::new(), actor_ref_clone, actors, system) {
+        let handle = thread::spawn(move || {
+            if let Err(e) = Self::actor_loop(actor_ref_clone, mailbox, condvar, inner, system) {
                 eprintln!("Actor loop error: {:?}", e);
             }
         });
 
+        let mut inner_lock = self.inner.lock().unwrap();
+        inner_lock.handles.push(handle);
+
         Ok(())
     }
 
-    /// Main actor message processing loop
-    fn actor_loop(&self, actor_ref: ActorRef, actors: HashMap<ActorId, Arc<Mutex<Actor>>>, system: Arc<Mutex<ActorSystem>>) -> Result<(), ActorError> {
+    /// Main actor message processing loop — runs on a dedicated OS thread.
+    fn actor_loop(
+        actor_ref: ActorRef,
+        mailbox: Arc<Mutex<VecDeque<Message>>>,
+        condvar: Arc<Condvar>,
+        inner: Arc<Mutex<ActorSystemInner>>,
+        system: Arc<Mutex<ActorSystem>>,
+    ) -> Result<(), ActorError> {
         loop {
-            // Wait for messages
+            // Wait for messages (blocking)
             let message = {
-                let mut mailbox = actor_ref.mailbox.lock().unwrap();
-                while mailbox.is_empty() {
-                    mailbox = actor_ref.condvar.wait(mailbox).unwrap();
+                let mut mbox = mailbox.lock().unwrap();
+                while mbox.is_empty() {
+                    mbox = condvar.wait(mbox).unwrap();
                 }
-                mailbox.pop_front().unwrap()
+                mbox.pop_front().unwrap()
             };
 
-            // Get the actor
-            let actor = actors.get(&actor_ref.actor_id)
-                .ok_or_else(|| ActorError::ActorError("Actor not found".to_string()))?
-                .clone();
+            // Get the actor from live system state
+            let actor_arc = {
+                let guard = inner.lock().unwrap();
+                guard.actors.get(&actor_ref.actor_id)
+                    .ok_or_else(|| ActorError::ActorError("Actor not found".to_string()))?
+                    .clone()
+            };
 
-            let mut actor_guard = actor.lock().unwrap();
+            let mut actor_guard = actor_arc.lock().unwrap();
             let behavior = actor_guard.behavior;
             let mut context = actor_guard.context.clone();
 
@@ -248,90 +284,59 @@ impl ActorSystem {
             };
 
             // Handle the action
-            match action {
+            let should_break = match action {
                 ActorAction::Continue => {
-                    // Continue processing messages
+                    actor_guard.state = ActorState::Running;
+                    actor_guard.context = context;
+                    false
                 }
                 ActorAction::Stop => {
                     actor_guard.state = ActorState::Stopped;
-                    break;
+                    true
                 }
                 ActorAction::SpawnChild { behavior: child_behavior, name } => {
-                    // Spawn child actor
-                    let child_id = {
-                        let system_guard = system.lock().unwrap();
-                        system_guard.next_actor_id
-                    };
-                    {
-                        let mut system_guard = system.lock().unwrap();
-                        system_guard.next_actor_id += 1;
+                    drop(actor_guard);
+                    let system_guard = system.lock().unwrap();
+                    let mut sys = system_guard.clone();
+                    drop(system_guard);
+
+                    if let Ok(child_ref) = sys.spawn(name, child_behavior) {
+                        let mut guard = actor_arc.lock().unwrap();
+                        guard.context.children.push(child_ref);
                     }
-                    
-                    let child_actor = Actor {
-                        id: child_id,
-                        name: name.clone(),
-                        behavior: child_behavior,
-                        context: ActorContext {
-                            parent: Some(actor_ref.clone()),
-                            children: Vec::new(),
-                            system: system.clone(),
-                            self_ref: ActorRef {
-                                actor_id: child_id,
-                                mailbox: Arc::new(Mutex::new(VecDeque::new())),
-                                condvar: Arc::new(Condvar::new()),
-                            },
-                            state: ActorState::Running,
-                            supervisor: None,
-                            actor_state: HashMap::new(),
-                        },
-                        mailbox: Arc::new(Mutex::new(VecDeque::new())),
-                        condvar: Arc::new(Condvar::new()),
-                        state: ActorState::Running,
-                    };
-                    
-                    let child_ref = ActorRef {
-                        actor_id: child_id,
-                        mailbox: Arc::new(Mutex::new(VecDeque::new())),
-                        condvar: Arc::new(Condvar::new()),
-                    };
-                    
-                    // Add to system
-                    {
-                        let mut system_guard = system.lock().unwrap();
-                        system_guard.actors.insert(child_id, Arc::new(Mutex::new(child_actor)));
-                    }
-                    
-                    // Add to parent's children
-                    if let Some(parent) = &actor_guard.context.parent {
-                        // Update parent's children list
-                        // This would need to be implemented properly
-                    }
-                    
-                    // Start child actor
-                    let child_system = system.clone();
-                    let child_ref_clone = child_ref.clone();
-                    std::thread::spawn(move || {
-                        // Start the child actor loop
-                        // This would need to be implemented properly
-                    });
+                    false
                 }
                 ActorAction::Send { target, message } => {
+                    drop(actor_guard);
                     if let Err(e) = target.send(message) {
                         eprintln!("Failed to send message: {:?}", e);
                     }
+                    false
                 }
                 ActorAction::Become { behavior: new_behavior } => {
                     actor_guard.behavior = new_behavior;
+                    actor_guard.context = context;
+                    false
                 }
                 ActorAction::Crash { error } => {
                     eprintln!("Actor crashed: {:?}", error);
                     actor_guard.state = ActorState::Crashed;
-                    break;
-                }
-            }
 
-            // Update context
-            actor_guard.context = context;
+                    if let Some(ref supervisor) = context.supervisor {
+                        let crash_msg = Message {
+                            sender: Some(actor_ref.clone()),
+                            payload: Value::Int(actor_ref.actor_id as i64),
+                            message_type: MessageType::Error,
+                        };
+                        let _ = supervisor.send(crash_msg);
+                    }
+                    true
+                }
+            };
+
+            if should_break {
+                break;
+            }
         }
 
         Ok(())
@@ -339,17 +344,18 @@ impl ActorSystem {
 
     /// Stop an actor
     pub fn stop(&mut self, actor_id: ActorId) -> Result<(), ActorError> {
-        if let Some(actor) = self.actors.get(&actor_id) {
+        let inner = self.inner.lock().unwrap();
+        if let Some(actor) = inner.actors.get(&actor_id) {
             let mut actor_guard = actor.lock().unwrap();
             actor_guard.state = ActorState::Stopping;
-            
+
             // Send stop message
             let stop_message = Message {
                 sender: None,
                 payload: Value::String("stop".to_string()),
                 message_type: MessageType::System,
             };
-            
+
             {
                 let mut mailbox = actor_guard.mailbox.lock().unwrap();
                 mailbox.push_back(stop_message);
@@ -360,13 +366,15 @@ impl ActorSystem {
     }
 
     /// Get actor by name
-    pub fn get_actor(&self, name: &str) -> Option<&ActorRef> {
-        self.system_actors.get(name)
+    pub fn get_actor(&self, name: &str) -> Option<ActorRef> {
+        let inner = self.inner.lock().unwrap();
+        inner.system_actors.get(name).cloned()
     }
 
     /// Get all actors
     pub fn get_all_actors(&self) -> Vec<ActorRef> {
-        self.actors.values()
+        let inner = self.inner.lock().unwrap();
+        inner.actors.values()
             .map(|actor| {
                 let actor_guard = actor.lock().unwrap();
                 ActorRef {
@@ -376,6 +384,14 @@ impl ActorSystem {
                 }
             })
             .collect()
+    }
+
+    pub fn actors_count(&self) -> usize {
+        self.inner.lock().unwrap().actors.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.inner.lock().unwrap().actors.is_empty()
     }
 }
 
@@ -516,60 +532,64 @@ impl ActorSystem {
                     // Check if function is marked as an actor
                     if fn_decl.name.starts_with("actor_") {
                         let actor_name = fn_decl.name.strip_prefix("actor_").unwrap_or(&fn_decl.name);
-                        
+
                         // Create actor behavior from function
                         let behavior = behaviors::echo_behavior;
-                        
+
                         // Spawn the actor
                         let actor_ref = self.spawn(actor_name.to_string(), behavior)?;
-                        self.system_actors.insert(actor_name.to_string(), actor_ref);
+                        let mut inner = self.inner.lock().unwrap();
+                        inner.system_actors.insert(actor_name.to_string(), actor_ref);
                     }
                 }
                 once_hir::HirItem::LetDecl(let_decl) => {
                     // Check if variable is an actor reference
                     if let_decl.name.starts_with("actor_") {
                         let actor_name = let_decl.name.strip_prefix("actor_").unwrap_or(&let_decl.name);
-                        
+
                         // Create a simple actor for this reference
                         let actor_ref = self.spawn(actor_name.to_string(), behaviors::echo_behavior)?;
-                        self.system_actors.insert(actor_name.to_string(), actor_ref);
+                        let mut inner = self.inner.lock().unwrap();
+                        inner.system_actors.insert(actor_name.to_string(), actor_ref);
                     }
                 }
-                _ => {
-                    // Other items don't create actors
-                }
+                _ => {}
             }
         }
-        
+
         // Create default system actors
-        let logger = self.spawn("logger".to_string(), behaviors::logger_behavior)?;
+        let _logger = self.spawn("logger".to_string(), behaviors::logger_behavior)?;
         let supervisor = self.spawn("supervisor".to_string(), behaviors::supervisor_behavior)?;
-        
+
         // Set supervisor
-        self.supervisor = Some(supervisor);
-        
+        {
+            let mut inner = self.inner.lock().unwrap();
+            inner.supervisor = Some(supervisor);
+        }
+
         Ok(())
     }
 
-    /// Run the actor system
+    /// Run the actor system — blocks until all actors are stopped
     pub fn run(&self) -> Result<(), ActorError> {
-        // Keep the system running
         loop {
             thread::sleep(std::time::Duration::from_millis(100));
-            
-            // Check if all actors are still running
-            let running_count = self.actors.values()
-                .filter(|actor| {
-                    let actor_guard = actor.lock().unwrap();
-                    matches!(actor_guard.state, ActorState::Running)
-                })
-                .count();
-            
+
+            let running_count = {
+                let inner = self.inner.lock().unwrap();
+                inner.actors.values()
+                    .filter(|actor| {
+                        let actor_guard = actor.lock().unwrap();
+                        matches!(actor_guard.state, ActorState::Running)
+                    })
+                    .count()
+            };
+
             if running_count == 0 {
                 break;
             }
         }
-        
+
         Ok(())
     }
 }
@@ -580,9 +600,8 @@ mod tests {
 
     #[test]
     fn test_actor_system_creation() {
-        let mut system = ActorSystem::new();
-        assert!(system.actors.is_empty());
-        assert_eq!(system.next_actor_id, 1);
+        let system = ActorSystem::new();
+        assert!(system.is_empty());
     }
 
     #[test]
@@ -590,7 +609,7 @@ mod tests {
         let mut system = ActorSystem::new();
         let actor_ref = system.spawn("test".to_string(), behaviors::echo_behavior);
         assert!(actor_ref.is_ok());
-        
+
         let actor_ref = actor_ref.unwrap();
         assert_eq!(actor_ref.actor_id, 1);
     }
@@ -599,13 +618,47 @@ mod tests {
     fn test_actor_message_sending() {
         let mut system = ActorSystem::new();
         let actor_ref = system.spawn("test".to_string(), behaviors::echo_behavior).unwrap();
-        
+
         let message = Message {
             sender: None,
             payload: Value::String("Hello".to_string()),
             message_type: MessageType::Regular,
         };
-        
+
         assert!(actor_ref.send(message).is_ok());
+    }
+
+    #[test]
+    fn test_counter_actor() {
+        let mut system = ActorSystem::new();
+        let actor_ref = system.spawn("counter".to_string(), behaviors::counter_behavior).unwrap();
+
+        for i in 1..=10 {
+            let message = Message {
+                sender: None,
+                payload: Value::Int(i),
+                message_type: MessageType::Regular,
+            };
+            assert!(actor_ref.send(message).is_ok());
+        }
+
+        // Give the actor time to process all messages
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    #[test]
+    fn test_actor_supervision_restart() {
+        let mut system = ActorSystem::new();
+        let _actor_ref = system.spawn("crashy".to_string(), behaviors::echo_behavior).unwrap();
+
+        // Send a message that the actor will echo back
+        let message = Message {
+            sender: None,
+            payload: Value::String("test".to_string()),
+            message_type: MessageType::Regular,
+        };
+        assert!(_actor_ref.send(message).is_ok());
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
     }
 }

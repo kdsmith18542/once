@@ -48,7 +48,7 @@ fn test_type_mismatch_error() {
                 body: HirBlock {
                     statements: vec![
                         HirStmt::Return(HirReturnStmt {
-                            value: Some(HirExpr::Literal(HirLiteral::String("oops".to_string()))),
+                            value: Some(HirExpr::Literal(HirLiteral::String("oops".to_string()), None)),
                             span: None,
                         }),
                     ],
@@ -83,15 +83,16 @@ fn test_if_branch_mismatch() {
                     statements: vec![
                         HirStmt::Return(HirReturnStmt {
                             value: Some(HirExpr::If {
-                                condition: Box::new(HirExpr::Literal(HirLiteral::Bool(true))),
+                                condition: Box::new(HirExpr::Literal(HirLiteral::Bool(true), None)),
                                 then_branch: HirBlock {
-                                    statements: vec![HirStmt::Expr(HirExpr::Literal(HirLiteral::Int(1)))],
+                                    statements: vec![HirStmt::Expr(HirExpr::Literal(HirLiteral::Int(1), None))],
                                     span: None,
                                 },
                                 else_branch: Some(Box::new(HirExpr::Block(HirBlock {
-                                    statements: vec![HirStmt::Expr(HirExpr::Literal(HirLiteral::String("bad".to_string())))],
+                                    statements: vec![HirStmt::Expr(HirExpr::Literal(HirLiteral::String("bad".to_string()), None))],
                                     span: None,
-                                }))),
+                                }, None))),
+                                span: None,
                             }),
                             span: None,
                         }),
@@ -123,12 +124,12 @@ fn test_polymorphic_identity() {
                 value: HirExpr::Block(HirBlock {
                     statements: vec![
                         HirStmt::Return(HirReturnStmt {
-                            value: Some(HirExpr::Ident("x".to_string())),
+                            value: Some(HirExpr::Ident("x".to_string(), None)),
                             span: None,
                         }),
                     ],
                     span: None,
-                }),
+                }, None),
                 is_public: false,
                 span: None,
             }),
@@ -145,7 +146,8 @@ fn test_polymorphic_identity() {
                             type_annotation: None,
                             value: HirExpr::Call {
                                 function: "id".to_string(),
-                                args: vec![HirExpr::Literal(HirLiteral::Int(1))],
+                                args: vec![HirExpr::Literal(HirLiteral::Int(1), None)],
+                                span: None,
                             },
                             is_linear: false,
                             span: None,
@@ -155,7 +157,8 @@ fn test_polymorphic_identity() {
                             type_annotation: None,
                             value: HirExpr::Call {
                                 function: "id".to_string(),
-                                args: vec![HirExpr::Literal(HirLiteral::String("hi".to_string()))],
+                                args: vec![HirExpr::Literal(HirLiteral::String("hi".to_string()), None)],
+                                span: None,
                             },
                             is_linear: false,
                             span: None,
@@ -195,7 +198,7 @@ fn test_undefined_variable() {
                 body: HirBlock {
                     statements: vec![
                         HirStmt::Return(HirReturnStmt {
-                            value: Some(HirExpr::Ident("undefined_var".to_string())),
+                            value: Some(HirExpr::Ident("undefined_var".to_string(), None)),
                             span: None,
                         }),
                     ],
@@ -236,8 +239,9 @@ fn test_array_indexing_types() {
                     statements: vec![
                         HirStmt::Return(HirReturnStmt {
                             value: Some(HirExpr::Index {
-                                base: Box::new(HirExpr::Ident("arr".to_string())),
-                                index: Box::new(HirExpr::Literal(HirLiteral::Int(0))),
+                                base: Box::new(HirExpr::Ident("arr".to_string(), None)),
+                                index: Box::new(HirExpr::Literal(HirLiteral::Int(0), None)),
+                                span: None,
                             }),
                             span: None,
                         }),
@@ -277,8 +281,9 @@ fn test_array_index_non_int_fails() {
                     statements: vec![
                         HirStmt::Return(HirReturnStmt {
                             value: Some(HirExpr::Index {
-                                base: Box::new(HirExpr::Ident("arr".to_string())),
-                                index: Box::new(HirExpr::Literal(HirLiteral::Bool(true))),
+                                base: Box::new(HirExpr::Ident("arr".to_string(), None)),
+                                index: Box::new(HirExpr::Literal(HirLiteral::Bool(true), None)),
+                                span: None,
                             }),
                             span: None,
                         }),

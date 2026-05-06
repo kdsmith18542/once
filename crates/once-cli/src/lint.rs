@@ -8,6 +8,7 @@
 //! - Linear-resource leaks
 
 use once_hir::{HirProgram, HirItem, HirFnDecl, HirStmt, HirExpr, HirBlock};
+use once_ty::effects;
 use std::collections::{HashSet, HashMap};
 
 pub struct LintWarning {
@@ -24,6 +25,9 @@ pub enum LintKind {
     DeadCode,
     StyleIssue,
     LinearResourceLeak,
+    CapabilityViolation,
+    BoxRcWarning,
+    UnusedEffect,
 }
 
 pub fn lint(hir: &HirProgram) -> Vec<LintWarning> {
@@ -34,6 +38,8 @@ pub fn lint(hir: &HirProgram) -> Vec<LintWarning> {
     check_unused_imports(hir, &mut warnings);
     check_unused_variables(hir, &mut warnings);
     check_linear_resource_leaks(hir, &mut warnings);
+    check_box_rc_usage(hir, &mut warnings);
+    check_unused_effects(hir, &mut warnings);
 
     warnings
 }
@@ -68,7 +74,7 @@ fn check_dead_code(hir: &HirProgram, warnings: &mut Vec<LintWarning>) {
 
     fn collect_calls_in_expr(expr: &HirExpr, called: &mut HashSet<String>) {
         match expr {
-            HirExpr::Call { function, args } => {
+            HirExpr::Call { function, args, .. } => {
                 called.insert(function.clone());
                 for a in args {
                     collect_calls_in_expr(a, called);
@@ -78,33 +84,33 @@ fn check_dead_code(hir: &HirProgram, warnings: &mut Vec<LintWarning>) {
                 collect_calls_in_expr(left, called);
                 collect_calls_in_expr(right, called);
             }
-            HirExpr::Block(b) => collect_calls(b, called),
-            HirExpr::If { condition, then_branch, else_branch } => {
+            HirExpr::Block(b, _) => collect_calls(b, called),
+            HirExpr::If { condition, then_branch, else_branch, .. } => {
                 collect_calls_in_expr(condition, called);
                 collect_calls(then_branch, called);
                 if let Some(ref e) = else_branch {
                     collect_calls_in_expr(e, called);
                 }
             }
-            HirExpr::Match { expr, arms } => {
+            HirExpr::Match { expr, arms, .. } => {
                 collect_calls_in_expr(expr, called);
-                for (_, arm) in arms {
-                    collect_calls_in_expr(arm, called);
+                for arm in arms {
+                    collect_calls_in_expr(&arm.body, called);
                 }
             }
             HirExpr::For { collection, body, .. } => {
                 collect_calls_in_expr(collection, called);
                 collect_calls(body, called);
             }
-            HirExpr::While { condition, body } => {
+            HirExpr::While { condition, body, .. } => {
                 collect_calls_in_expr(condition, called);
                 collect_calls(body, called);
             }
-            HirExpr::Index { base, index } => {
+            HirExpr::Index { base, index, .. } => {
                 collect_calls_in_expr(base, called);
                 collect_calls_in_expr(index, called);
             }
-            HirExpr::Try(inner) => collect_calls_in_expr(inner, called),
+            HirExpr::Try(inner, _) => collect_calls_in_expr(inner, called),
             HirExpr::Struct { fields, .. } => {
                 for (_, e) in fields {
                     collect_calls_in_expr(e, called);
@@ -129,7 +135,7 @@ fn check_dead_code(hir: &HirProgram, warnings: &mut Vec<LintWarning>) {
             if f.name != "main" && !f.is_public && !called_functions.contains(&f.name) {
                 warnings.push(LintWarning {
                     message: format!("Function '{}' is defined but never called", f.name),
-                    line: f.span.map(|s| s.0).unwrap_or(0),
+                    line: f.span.map(|s| s.line).unwrap_or(0),
                     kind: LintKind::DeadCode,
                     suggestion: Some("Consider removing this function or marking it as public.".to_string()),
                 });
@@ -168,8 +174,8 @@ fn check_unused_imports(hir: &HirProgram, warnings: &mut Vec<LintWarning>) {
 
     fn collect_idents_in_expr(expr: &HirExpr, used: &mut HashSet<String>) {
         match expr {
-            HirExpr::Ident(name) => { used.insert(name.clone()); }
-            HirExpr::Call { function, args } => {
+            HirExpr::Ident(name, _) => { used.insert(name.clone()); }
+            HirExpr::Call { function, args, .. } => {
                 used.insert(function.clone());
                 for a in args {
                     collect_idents_in_expr(a, used);
@@ -179,33 +185,33 @@ fn check_unused_imports(hir: &HirProgram, warnings: &mut Vec<LintWarning>) {
                 collect_idents_in_expr(left, used);
                 collect_idents_in_expr(right, used);
             }
-            HirExpr::Block(b) => collect_idents(b, used),
-            HirExpr::If { condition, then_branch, else_branch } => {
+            HirExpr::Block(b, _) => collect_idents(b, used),
+            HirExpr::If { condition, then_branch, else_branch, .. } => {
                 collect_idents_in_expr(condition, used);
                 collect_idents(then_branch, used);
                 if let Some(ref e) = else_branch {
                     collect_idents_in_expr(e, used);
                 }
             }
-            HirExpr::Match { expr, arms } => {
+            HirExpr::Match { expr, arms, .. } => {
                 collect_idents_in_expr(expr, used);
-                for (_, arm) in arms {
-                    collect_idents_in_expr(arm, used);
+                for arm in arms {
+                    collect_idents_in_expr(&arm.body, used);
                 }
             }
-            HirExpr::For { item: _, collection, body } => {
+            HirExpr::For { item: _, collection, body, .. } => {
                 collect_idents_in_expr(collection, used);
                 collect_idents(body, used);
             }
-            HirExpr::While { condition, body } => {
+            HirExpr::While { condition, body, .. } => {
                 collect_idents_in_expr(condition, used);
                 collect_idents(body, used);
             }
-            HirExpr::Index { base, index } => {
+            HirExpr::Index { base, index, .. } => {
                 collect_idents_in_expr(base, used);
                 collect_idents_in_expr(index, used);
             }
-            HirExpr::Try(inner) => collect_idents_in_expr(inner, used),
+            HirExpr::Try(inner, _) => collect_idents_in_expr(inner, used),
             HirExpr::Struct { fields, .. } => {
                 for (_, e) in fields {
                     collect_idents_in_expr(e, used);
@@ -277,8 +283,8 @@ fn check_unused_variables(hir: &HirProgram, warnings: &mut Vec<LintWarning>) {
 
         fn collect_idents_in_expr_light(expr: &HirExpr, used: &mut HashSet<String>) {
             match expr {
-                HirExpr::Ident(name) => { used.insert(name.clone()); }
-                HirExpr::Call { function, args } => {
+                HirExpr::Ident(name, _) => { used.insert(name.clone()); }
+                HirExpr::Call { function, args, .. } => {
                     used.insert(function.clone());
                     for a in args { collect_idents_in_expr_light(a, used); }
                 }
@@ -286,31 +292,31 @@ fn check_unused_variables(hir: &HirProgram, warnings: &mut Vec<LintWarning>) {
                     collect_idents_in_expr_light(left, used);
                     collect_idents_in_expr_light(right, used);
                 }
-                HirExpr::Block(b) => collect_uses_in_block(b, used),
-                HirExpr::If { condition, then_branch, else_branch } => {
+                HirExpr::Block(b, _) => collect_uses_in_block(b, used),
+                HirExpr::If { condition, then_branch, else_branch, .. } => {
                     collect_idents_in_expr_light(condition, used);
                     collect_uses_in_block(then_branch, used);
                     if let Some(ref e) = else_branch {
                         collect_idents_in_expr_light(e, used);
                     }
                 }
-                HirExpr::Match { expr, arms } => {
+                HirExpr::Match { expr, arms, .. } => {
                     collect_idents_in_expr_light(expr, used);
-                    for (_, arm) in arms { collect_idents_in_expr_light(arm, used); }
+                    for arm in arms { collect_idents_in_expr_light(&arm.body, used); }
                 }
                 HirExpr::For { collection, body, .. } => {
                     collect_idents_in_expr_light(collection, used);
                     collect_uses_in_block(body, used);
                 }
-                HirExpr::While { condition, body } => {
+                HirExpr::While { condition, body, .. } => {
                     collect_idents_in_expr_light(condition, used);
                     collect_uses_in_block(body, used);
                 }
-                HirExpr::Index { base, index } => {
+                HirExpr::Index { base, index, .. } => {
                     collect_idents_in_expr_light(base, used);
                     collect_idents_in_expr_light(index, used);
                 }
-                HirExpr::Try(inner) => collect_idents_in_expr_light(inner, used),
+                HirExpr::Try(inner, _) => collect_idents_in_expr_light(inner, used),
                 HirExpr::Struct { fields, .. } => {
                     for (_, e) in fields { collect_idents_in_expr_light(e, used); }
                 }
@@ -327,7 +333,7 @@ fn check_unused_variables(hir: &HirProgram, warnings: &mut Vec<LintWarning>) {
                 if !l.name.starts_with('_') && !used.contains(&l.name) {
                     warnings.push(LintWarning {
                         message: format!("Variable '{}' is assigned but never used", l.name),
-                        line: l.span.map(|s| s.0).unwrap_or(0),
+                        line: l.span.map(|s| s.line).unwrap_or(0),
                         kind: LintKind::UnusedVariable,
                         suggestion: Some(format!("Consider prefixing with '_' or removing 'let {}'", l.name)),
                     });
@@ -365,14 +371,14 @@ fn check_linear_resource_leaks(hir: &HirProgram, warnings: &mut Vec<LintWarning>
                 fn collect_used_idents(block: &HirBlock, used: &mut HashSet<String>) {
                     for stmt in &block.statements {
                         match stmt {
-                            HirStmt::Expr(HirExpr::Ident(name)) => { used.insert(name.clone()); }
+                            HirStmt::Expr(HirExpr::Ident(name, _)) => { used.insert(name.clone()); }
                             HirStmt::Return(r) => {
-                                if let Some(HirExpr::Ident(name)) = r.value.as_ref() {
+                                if let Some(HirExpr::Ident(name, _)) = r.value.as_ref() {
                                     used.insert(name.clone());
                                 }
                             }
                             HirStmt::Let(l) => {
-                                if let HirExpr::Ident(name) = &l.value {
+                                if let HirExpr::Ident(name, _) = &l.value {
                                     used.insert(name.clone());
                                 }
                             }
@@ -389,7 +395,7 @@ fn check_linear_resource_leaks(hir: &HirProgram, warnings: &mut Vec<LintWarning>
                                 "Linear parameter '{}' in function '{}' is never used",
                                 param_name, f.name
                             ),
-                            line: f.span.map(|s| s.0).unwrap_or(0),
+                            line: f.span.map(|s| s.line).unwrap_or(0),
                             kind: LintKind::LinearResourceLeak,
                             suggestion: Some(format!(
                                 "Ensure '{}' is consumed before the function returns",
@@ -413,7 +419,7 @@ fn check_style_issues(hir: &HirProgram, warnings: &mut Vec<LintWarning>) {
                         if !is_unit_expression(stmt) {
                             warnings.push(LintWarning {
                                 message: format!("Function '{}' has no return type annotation", f.name),
-                                line: f.span.map(|s| s.0).unwrap_or(0),
+                                line: f.span.map(|s| s.line).unwrap_or(0),
                                 kind: LintKind::StyleIssue,
                                 suggestion: Some("Consider adding an explicit return type.".to_string()),
                             });
@@ -427,7 +433,7 @@ fn check_style_issues(hir: &HirProgram, warnings: &mut Vec<LintWarning>) {
                             "Function '{}' uses PascalCase; consider using snake_case",
                             f.name
                         ),
-                        line: f.span.map(|s| s.0).unwrap_or(0),
+                        line: f.span.map(|s| s.line).unwrap_or(0),
                         kind: LintKind::StyleIssue,
                         suggestion: Some(format!(
                             "Rename to '{}' for consistency",
@@ -452,7 +458,7 @@ fn check_style_issues(hir: &HirProgram, warnings: &mut Vec<LintWarning>) {
                             "Struct '{}' should use PascalCase",
                             s.name
                         ),
-                        line: s.span.map(|s| s.0).unwrap_or(0),
+                        line: s.span.map(|s| s.line).unwrap_or(0),
                         kind: LintKind::StyleIssue,
                         suggestion: Some(format!(
                             "Rename to '{}'",
@@ -470,9 +476,9 @@ fn is_unit_expression(stmt: &HirStmt) -> bool {
     match stmt {
         HirStmt::Let(_) => true,
         HirStmt::Using(_) => true,
-        HirStmt::Continue | HirStmt::Break => true,
+        HirStmt::Continue(_) | HirStmt::Break(_) => true,
         HirStmt::Return(r) => r.value.is_none(),
-        HirStmt::Expr(e) => matches!(e, HirExpr::Literal(once_hir::HirLiteral::Unit)),
+        HirStmt::Expr(e) => matches!(e, HirExpr::Literal(once_hir::HirLiteral::Unit, _)),
     }
 }
 
@@ -505,4 +511,160 @@ fn to_pascal_case(name: &str) -> String {
         }
     }
     result
+}
+
+/// Warn when `box T` or `rc T` is used (escape hatch from RMM, see ONCE-004 §2.4)
+fn check_box_rc_usage(hir: &HirProgram, warnings: &mut Vec<LintWarning>) {
+    fn check_type(ty: &once_hir::HirType, warnings: &mut Vec<LintWarning>) {
+        match ty {
+            once_hir::HirType::Linear(inner) => {
+                if let once_hir::HirType::Ident(name) = inner.as_ref() {
+                    if name == "box" {
+                        warnings.push(LintWarning {
+                            message: "Usage of `box T` escape hatch detected — prefer region-based allocation (ONCE-004 §2.4)".to_string(),
+                            line: 0,
+                            kind: LintKind::BoxRcWarning,
+                            suggestion: Some("Consider using region-inferred allocation instead of box.".to_string()),
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    
+    for item in &hir.items {
+        match item {
+            once_hir::HirItem::FnDecl(f) => {
+                for param in &f.params {
+                    if let Some(ty) = &param.type_annotation {
+                        check_type(ty, warnings);
+                    }
+                }
+            }
+            once_hir::HirItem::LetDecl(l) => {
+                if let Some(ty) = &l.type_annotation {
+                    check_type(ty, warnings);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Warn when a function declares an effect that is never used in its body
+fn check_unused_effects(hir: &HirProgram, warnings: &mut Vec<LintWarning>) {
+    for item in &hir.items {
+        if let once_hir::HirItem::FnDecl(f) = item {
+            if let Some(ref effect_row) = f.effects {
+                if effect_row.effects.is_empty() {
+                    continue;
+                }
+                
+                // Collect all identifiers (function calls) in the body
+                let mut called_functions: HashSet<String> = HashSet::new();
+                collect_calls_in_body(&f.body, &mut called_functions);
+                
+                // Run effect checker to get actual effect set
+                let mut effect_checker = once_ty::effects::EffectChecker::new();
+                if let Ok(()) = effect_checker.check(hir) {
+                    for declared_effect in &effect_row.effects {
+                        // Check if the declared effect matches any inferred effect
+                        let mut found = false;
+                        for (_, body_effects) in &effect_checker.env.bindings {
+                            use once_ty::effects::EffectLabel;
+                            let label = match declared_effect.as_str() {
+                                "io" => EffectLabel::Io,
+                                "net" => EffectLabel::Net,
+                                "spawn" => EffectLabel::Spawn,
+                                "time" => EffectLabel::Time,
+                                "ffi" => EffectLabel::Ffi,
+                                _ => EffectLabel::Custom(declared_effect.clone()),
+                            };
+                            if effect_checker.contains_effect(body_effects, &label) {
+                                found = true;
+                                break;
+                            }
+                        }
+                        if !found {
+                            warnings.push(LintWarning {
+                                message: format!("Function '{}' declares `!{}` effect but it is never used", f.name, declared_effect),
+                                line: f.span.map(|s| s.line).unwrap_or(0),
+                                kind: LintKind::UnusedEffect,
+                                suggestion: Some(format!("Consider removing '!{}' from the effect annotation.", declared_effect)),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn collect_calls_in_body(block: &HirBlock, called: &mut HashSet<String>) {
+    for stmt in &block.statements {
+        match stmt {
+            HirStmt::Let(l) => collect_calls_in_expr_lint(&l.value, called),
+            HirStmt::Return(r) => {
+                if let Some(ref e) = r.value {
+                    collect_calls_in_expr_lint(e, called);
+                }
+            }
+            HirStmt::Expr(e) => collect_calls_in_expr_lint(e, called),
+            HirStmt::Using(u) => {
+                collect_calls_in_expr_lint(&u.init, called);
+                collect_calls_in_body(&u.body, called);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn collect_calls_in_expr_lint(expr: &HirExpr, called: &mut HashSet<String>) {
+    match expr {
+        HirExpr::Call { function, args, .. } => {
+            called.insert(function.clone());
+            for a in args {
+                collect_calls_in_expr_lint(a, called);
+            }
+        }
+        HirExpr::Binary { left, right, .. } => {
+            collect_calls_in_expr_lint(left, called);
+            collect_calls_in_expr_lint(right, called);
+        }
+        HirExpr::Block(b, _) => collect_calls_in_body(b, called),
+        HirExpr::If { condition, then_branch, else_branch, .. } => {
+            collect_calls_in_expr_lint(condition, called);
+            collect_calls_in_body(then_branch, called);
+            if let Some(ref e) = else_branch {
+                collect_calls_in_expr_lint(e, called);
+            }
+        }
+        HirExpr::Match { expr, arms, .. } => {
+            collect_calls_in_expr_lint(expr, called);
+            for arm in arms {
+                collect_calls_in_expr_lint(&arm.body, called);
+            }
+        }
+        HirExpr::For { collection, body, .. } => {
+            collect_calls_in_expr_lint(collection, called);
+            collect_calls_in_body(body, called);
+        }
+        HirExpr::While { condition, body, .. } => {
+            collect_calls_in_expr_lint(condition, called);
+            collect_calls_in_body(body, called);
+        }
+        HirExpr::Index { base, index, .. } => {
+            collect_calls_in_expr_lint(base, called);
+            collect_calls_in_expr_lint(index, called);
+        }
+        HirExpr::Try(inner, _) => collect_calls_in_expr_lint(inner, called),
+        HirExpr::Struct { fields, .. } => {
+            for (_, e) in fields {
+                collect_calls_in_expr_lint(e, called);
+            }
+        }
+        HirExpr::FieldAccess { base, .. } => collect_calls_in_expr_lint(base, called),
+        _ => {}
+    }
 }

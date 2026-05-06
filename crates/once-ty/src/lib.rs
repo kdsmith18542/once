@@ -62,8 +62,17 @@ pub enum TypeError {
     #[error("Trait bound not satisfied: {type_name} does not implement {trait_name}")]
     TraitBoundNotSatisfied { type_name: String, trait_name: String, span: Option<SourceSpan> },
 
+    #[error("Missing return type annotation on function '{name}': top-level functions must have explicit -> Type")]
+    MissingReturnAnnotation { name: String, span: Option<SourceSpan> },
+
+    #[error("Missing effect annotation on exported function '{name}': exported functions must declare all effects explicitly")]
+    MissingEffectAnnotation { name: String, span: Option<SourceSpan> },
+
     #[error("Effect error: {0}")]
     Effect(String),
+
+    #[error("Non-exhaustive match: the following patterns are not covered: {missing:?}")]
+    NonExhaustiveMatch { missing: Vec<String>, span: Option<SourceSpan> },
 }
 
 impl TypeError {
@@ -73,9 +82,12 @@ impl TypeError {
             TypeError::TypeMismatch { span, .. } => *span,
             TypeError::UndefinedVariable { span, .. } => *span,
             TypeError::TraitBoundNotSatisfied { span, .. } => *span,
+            TypeError::MissingReturnAnnotation { span, .. } => *span,
+            TypeError::MissingEffectAnnotation { span, .. } => *span,
             TypeError::LinearValueReused(_) => None,
             TypeError::NonLinearInLinearContext(_) => None,
             TypeError::Effect(_) => None,
+            TypeError::NonExhaustiveMatch { span, .. } => *span,
             _ => None,
         }
     }
@@ -85,6 +97,34 @@ impl TypeError {
         match self.span() {
             Some(span) => format!("{} at {}", self, span),
             None => self.to_string(),
+        }
+    }
+
+    /// Format a full diagnostic message with source location and excerpt
+    pub fn diagnostic_with_source(&self, source: &str) -> String {
+        let base = self.diagnostic();
+        match self.span() {
+            Some(span) => {
+                let lines: Vec<&str> = source.lines().collect();
+                let line_idx = span.line.saturating_sub(1);
+                if line_idx < lines.len() {
+                    let source_line = lines[line_idx];
+                    let col = span.column.saturating_sub(1);
+                    let marker = if col < source_line.len() {
+                        format!("{}{}", " ".repeat(col), "^".repeat(
+                            (span.end - span.start).max(1).min(source_line.len() - col)
+                        ))
+                    } else {
+                        String::new()
+                    };
+                    format!("{}\n --> line {}:{}\n  |\n{} | {}\n  | {}", 
+                        base, span.line, span.column, 
+                        line_idx + 1, source_line, marker)
+                } else {
+                    base
+                }
+            }
+            None => base,
         }
     }
 }
@@ -522,6 +562,8 @@ pub struct TypeChecker {
     pub hole_variables: Vec<HoleInfo>,
     /// Registered struct declarations for field validation
     pub structs: HashMap<String, HirStructDecl>,
+    /// Registered type (enum) declarations
+    pub type_decls: HashMap<String, HirTypeDecl>,
 }
 
 impl TypeChecker {
@@ -534,6 +576,7 @@ impl TypeChecker {
             current_span: None,
             hole_variables: Vec::new(),
             structs: HashMap::new(),
+            type_decls: HashMap::new(),
         }
     }
 
@@ -582,6 +625,9 @@ impl TypeChecker {
         for item in &hir.items {
             if let HirItem::StructDecl(s) = item {
                 self.structs.insert(s.name.clone(), s.clone());
+            }
+            if let HirItem::TypeDecl(td) = item {
+                self.type_decls.insert(td.name.clone(), td.clone());
             }
         }
         
@@ -785,6 +831,15 @@ impl TypeChecker {
         let mut fn_env = self.env.clone();
         self.add_builtin_types_to_env(&mut fn_env);
         
+        // ONCE-003 §2.3: Top-level functions MUST have explicit return type annotations.
+        if fn_decl.return_type.is_none() {
+            self.errors.push(TypeError::MissingReturnAnnotation {
+                name: fn_decl.name.clone(),
+                span: fn_decl.span.map(|hs| SourceSpan { start: hs.start, end: hs.end, line: hs.line, column: hs.column }),
+            });
+            return Err(self.errors.clone());
+        }
+        
         // Handle type parameters
         for param in &fn_decl.type_params {
             let var = fn_env.fresh_var();
@@ -898,7 +953,7 @@ impl TypeChecker {
                 }
             }
             HirStmt::Expr(expr) => self.check_expr_with_env(expr, env),
-            HirStmt::Continue | HirStmt::Break => Ok(Type::Unit),
+            HirStmt::Continue(_) | HirStmt::Break(_) => Ok(Type::Unit),
             HirStmt::Using(using_stmt) => {
                 // Check the init expression
                 let init_type = self.check_expr_with_env(&using_stmt.init, env)?;
@@ -930,9 +985,24 @@ impl TypeChecker {
     }
 
     fn check_expr_with_env(&mut self, expr: &HirExpr, env: &mut TypeEnv) -> Result<Type, Vec<TypeError>> {
+        self.current_span = match expr {
+            HirExpr::Literal(_, span) => *span,
+            HirExpr::Ident(_, span) => *span,
+            HirExpr::Call { span, .. } => *span,
+            HirExpr::Binary { span, .. } => *span,
+            HirExpr::Block(_, span) => *span,
+            HirExpr::If { span, .. } => *span,
+            HirExpr::Match { span, .. } => *span,
+            HirExpr::For { span, .. } => *span,
+            HirExpr::Index { span, .. } => *span,
+            HirExpr::Try(_, span) => *span,
+            HirExpr::While { span, .. } => *span,
+            HirExpr::Struct { span, .. } => *span,
+            HirExpr::FieldAccess { span, .. } => *span,
+        }.map(|hs| SourceSpan { start: hs.start, end: hs.end, line: hs.line, column: hs.column });
         match expr {
-            HirExpr::Literal(lit) => Ok(self.literal_type(lit)),
-            HirExpr::Ident(name) => {
+            HirExpr::Literal(lit, _) => Ok(self.literal_type(lit)),
+            HirExpr::Ident(name, _) => {
                 if let Some(scheme) = env.bindings.get(name) {
                     Ok(self.instantiate_scheme(scheme))
                 } else {
@@ -943,7 +1013,7 @@ impl TypeChecker {
                     Err(self.errors.clone())
                 }
             }
-            HirExpr::Call { function, args } => {
+            HirExpr::Call { function, args, .. } => {
                 let arg_types: Result<Vec<Type>, _> = args.iter()
                     .map(|arg| self.check_expr_with_env(arg, env))
                     .collect();
@@ -972,7 +1042,7 @@ impl TypeChecker {
                 
                 Ok(return_type)
             }
-            HirExpr::Binary { left, op: _, right } => {
+            HirExpr::Binary { left, op: _, right, .. } => {
                 let left_type = self.check_expr_with_env(left, env)?;
                 let right_type = self.check_expr_with_env(right, env)?;
                 
@@ -984,8 +1054,8 @@ impl TypeChecker {
                 
                 Ok(left_type)
             }
-            HirExpr::Block(block) => self.check_block(block, env),
-            HirExpr::If { condition, then_branch, else_branch } => {
+            HirExpr::Block(block, _) => self.check_block(block, env),
+            HirExpr::If { condition, then_branch, else_branch, .. } => {
                 let cond_type = self.check_expr_with_env(condition, env)?;
                 env.add_constraint(Constraint::Equal {
                     left: cond_type,
@@ -1010,19 +1080,29 @@ impl TypeChecker {
                     Ok(Type::Unit)
                 }
             }
-            HirExpr::Match { expr, arms } => {
+            HirExpr::Match { expr, arms, span } => {
                 let expr_type = self.check_expr_with_env(expr, env)?;
                 let return_type = Type::Var(env.fresh_var());
                 
-                for (pattern, arm_expr) in arms {
+                for arm in arms {
                     let mut arm_env = env.clone();
-                    let pattern_type = self.check_pattern(pattern, &mut arm_env)?;
+                    let pattern_type = self.check_pattern(&arm.pattern, &mut arm_env)?;
+                    
+                    // Check guard condition if present
+                    if let Some(ref guard) = arm.guard {
+                        let guard_type = self.check_expr_with_env(guard, &mut arm_env)?;
+                        arm_env.add_constraint(Constraint::Equal {
+                            left: guard_type,
+                            right: Type::Bool,
+                        });
+                    }
+                    
                     arm_env.add_constraint(Constraint::Equal {
                         left: pattern_type,
                         right: expr_type.clone(),
                     });
                     
-                    let arm_type = self.check_expr_with_env(arm_expr, &mut arm_env)?;
+                    let arm_type = self.check_expr_with_env(&arm.body, &mut arm_env)?;
                     arm_env.add_constraint(Constraint::Equal {
                         left: arm_type,
                         right: return_type.clone(),
@@ -1031,10 +1111,58 @@ impl TypeChecker {
                     env.constraints.extend(arm_env.constraints);
                     env.region_constraints.extend(arm_env.region_constraints);
                 }
+
+                // Check exhaustiveness
+                let source_span = span.map(|hs| SourceSpan { start: hs.start, end: hs.end, line: hs.line, column: hs.column });
+                let has_wildcard = arms.iter().any(|arm| matches!(arm.pattern, HirPattern::Wildcard));
+                if !has_wildcard {
+                    let first_non_ident = arms.iter().find_map(|arm| {
+                        match &arm.pattern {
+                            HirPattern::Literal(_) | HirPattern::EnumVariant { .. } => Some(&arm.pattern),
+                            _ => None,
+                        }
+                    });
+                    match first_non_ident {
+                        Some(HirPattern::Literal(HirLiteral::Bool(_))) => {
+                            let has_true = arms.iter().any(|arm| matches!(arm.pattern, HirPattern::Literal(HirLiteral::Bool(true))));
+                            let has_false = arms.iter().any(|arm| matches!(arm.pattern, HirPattern::Literal(HirLiteral::Bool(false))));
+                            let mut missing = Vec::new();
+                            if !has_true { missing.push("true".to_string()); }
+                            if !has_false { missing.push("false".to_string()); }
+                            if !missing.is_empty() {
+                                self.errors.push(TypeError::NonExhaustiveMatch { missing, span: source_span });
+                            }
+                        }
+                        Some(HirPattern::EnumVariant { ref name, .. }) => {
+                            for (_type_name, type_decl) in &self.type_decls {
+                                if type_decl.variants.iter().any(|v| v.name == *name) {
+                                    let covered: std::collections::HashSet<&str> = arms.iter()
+                                        .filter_map(|arm| {
+                                            if let HirPattern::EnumVariant { name, .. } = &arm.pattern {
+                                                Some(name.as_str())
+                                            } else {
+                                                None
+                                            }
+                                        })
+                                        .collect();
+                                    let missing: Vec<String> = type_decl.variants.iter()
+                                        .map(|v| v.name.clone())
+                                        .filter(|vn| !covered.contains(vn.as_str()))
+                                        .collect();
+                                    if !missing.is_empty() {
+                                        self.errors.push(TypeError::NonExhaustiveMatch { missing, span: source_span });
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
                 
                 Ok(return_type)
             }
-            HirExpr::For { item, collection, body } => {
+            HirExpr::For { item, collection, body, .. } => {
                 let coll_type = self.check_expr_with_env(collection, env)?;
                 let item_type = Type::Var(env.fresh_var());
                 
@@ -1062,7 +1190,7 @@ impl TypeChecker {
                 
                 Ok(Type::Unit)
             }
-            HirExpr::Index { base, index } => {
+            HirExpr::Index { base, index, .. } => {
                 let base_type = self.check_expr_with_env(base, env)?;
                 let index_type = self.check_expr_with_env(index, env)?;
                 let elem_type = Type::Var(env.fresh_var());
@@ -1081,7 +1209,7 @@ impl TypeChecker {
                 
                 Ok(elem_type)
             }
-            HirExpr::Try(inner) => {
+            HirExpr::Try(inner, _) => {
                 let inner_type = self.check_expr_with_env(inner, env)?;
                 let ok_type = Type::Var(env.fresh_var());
                 let err_type = Type::Var(env.fresh_var());
@@ -1091,7 +1219,7 @@ impl TypeChecker {
                 });
                 Ok(ok_type)
             }
-            HirExpr::Struct { name, fields } => {
+            HirExpr::Struct { name, fields, .. } => {
                 // Look up struct declaration
                 let struct_fields: Vec<(String, HirType)> = self.structs.get(name)
                     .map(|sd| sd.fields.iter().map(|f| (f.name.clone(), f.field_type.clone())).collect())
@@ -1148,11 +1276,11 @@ impl TypeChecker {
                 
                 Ok(Type::UserDefined { name: name.clone(), args: vec![] })
             }
-            HirExpr::FieldAccess { base, field: _ } => {
+            HirExpr::FieldAccess { base, field: _, .. } => {
                 // Check the base expression and return the field type
                 self.check_expr_with_env(base, env)
             }
-            HirExpr::While { condition, body } => {
+            HirExpr::While { condition, body, .. } => {
                 let cond_type = self.check_expr_with_env(condition, env)?;
                 env.add_constraint(Constraint::Equal {
                     left: cond_type,
@@ -1181,6 +1309,14 @@ impl TypeChecker {
                 Ok(var_type)
             }
             HirPattern::Wildcard => Ok(Type::Var(env.fresh_var())),
+            HirPattern::EnumVariant { fields, .. } => {
+                // Each sub-pattern gets checked and binds variables in scope
+                let inner_type = Type::Var(env.fresh_var());
+                for field in fields {
+                    let _field_type = self.check_pattern(field, env)?;
+                }
+                Ok(inner_type)
+            }
         }
     }
 
@@ -1490,7 +1626,7 @@ impl TypeChecker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use once_hir::{HirProgram, HirItem, HirFnDecl, HirBlock, HirStmt, HirExpr, HirLiteral, HirReturnStmt, HirEffectRow};
+    use once_hir::{HirProgram, HirItem, HirFnDecl, HirBlock, HirStmt, HirExpr, HirLiteral, HirPattern, HirReturnStmt, HirEffectRow};
 
     #[test]
     fn test_basic_type_checking() {
@@ -1544,15 +1680,16 @@ mod tests {
                         statements: vec![
                             HirStmt::Return(HirReturnStmt { 
                                 value: Some(HirExpr::If {
-                                    condition: Box::new(HirExpr::Literal(HirLiteral::Bool(true))),
+                                    condition: Box::new(HirExpr::Literal(HirLiteral::Bool(true), None)),
                                     then_branch: HirBlock {
-                                        statements: vec![HirStmt::Expr(HirExpr::Literal(HirLiteral::Int(1)))],
+                                        statements: vec![HirStmt::Expr(HirExpr::Literal(HirLiteral::Int(1), None))],
                                         span: None,
                                     },
                                     else_branch: Some(Box::new(HirExpr::Block(HirBlock {
-                                        statements: vec![HirStmt::Expr(HirExpr::Literal(HirLiteral::Int(2)))],
+                                        statements: vec![HirStmt::Expr(HirExpr::Literal(HirLiteral::Int(2), None))],
                                         span: None,
-                                    }))),
+                                    }, None))),
+                                    span: None,
                                 }),
                                 span: None,
                             }),
@@ -1589,8 +1726,8 @@ mod tests {
                     effects: None,
                     body: HirBlock {
                         statements: vec![
-                            HirStmt::Expr(HirExpr::Ident("f".to_string())),
-                            HirStmt::Expr(HirExpr::Ident("f".to_string())), // Double use!
+                            HirStmt::Expr(HirExpr::Ident("f".to_string(), None)),
+                            HirStmt::Expr(HirExpr::Ident("f".to_string(), None)), // Double use!
                             HirStmt::Return(HirReturnStmt { value: None, span: None }),
                         ],
                         span: None,
@@ -1624,6 +1761,7 @@ mod tests {
                             HirStmt::Expr(HirExpr::Call {
                                 function: "spawn".to_string(), // But calls spawn!
                                 args: vec![],
+                                span: None,
                             }),
                             HirStmt::Return(HirReturnStmt { value: None, span: None }),
                         ],
@@ -1647,5 +1785,44 @@ mod tests {
             }
             panic!("Expected Effect error, but got others");
         }
+    }
+
+    #[test]
+    fn test_match_exhaustiveness_bool() {
+        let program = HirProgram {
+            items: vec![
+                HirItem::FnDecl(HirFnDecl {
+                    name: "main".to_string(),
+                    type_params: vec![],
+                    params: vec![],
+                    return_type: Some(HirType::Unit),
+                    effects: None,
+                    body: HirBlock {
+                        statements: vec![
+                            HirStmt::Expr(HirExpr::Match {
+                                expr: Box::new(HirExpr::Literal(HirLiteral::Bool(true), None)),
+                                arms: vec![
+                                    HirMatchArm {
+                                        pattern: HirPattern::Literal(HirLiteral::Bool(true)),
+                                        guard: None,
+                                        body: HirExpr::Literal(HirLiteral::Unit, None),
+                                    },
+                                ],
+                                span: None,
+                            }),
+                        ],
+                        span: None,
+                    },
+                    is_public: false,
+                    span: None,
+                }),
+            ],
+            imports: vec![],
+        };
+        let mut checker = TypeChecker::new();
+        let result = checker.check(&program);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(errors.iter().any(|e| matches!(e, TypeError::NonExhaustiveMatch { .. })));
     }
 }

@@ -215,7 +215,7 @@ impl LinearityEnv {
 
 /// Linearity checker for Once programs
 pub struct LinearityChecker {
-    env: LinearityEnv,
+    pub env: LinearityEnv,
     errors: Vec<LinearityError>,
 }
 
@@ -387,7 +387,7 @@ impl LinearityChecker {
                     self.check_stmt(stmt, env)?;
                 }
             }
-            HirStmt::Continue | HirStmt::Break => {
+            HirStmt::Continue(_) | HirStmt::Break(_) => {
                 // No linearity implications — just control flow
             }
         }
@@ -403,8 +403,8 @@ impl LinearityChecker {
 
     fn check_expr_with_env(&mut self, expr: &HirExpr, env: &mut LinearityEnv) -> Result<(), Vec<LinearityError>> {
         match expr {
-            HirExpr::Literal(_) => Ok(()),
-            HirExpr::Ident(name) => {
+            HirExpr::Literal(_, _) => Ok(()),
+            HirExpr::Ident(name, _) => {
                 // Check variable usage
                 if let Err(e) = env.use_variable(name, Span::new(0, 0, 0, 0)) {
                     self.errors.push(e);
@@ -412,7 +412,7 @@ impl LinearityChecker {
                 }
                 Ok(())
             }
-            HirExpr::Call { function, args } => {
+            HirExpr::Call { function, args, .. } => {
                 // Check arguments
                 for arg in args {
                     self.check_expr_with_env(arg, env)?;
@@ -423,7 +423,7 @@ impl LinearityChecker {
                     "consume" | "close" | "drop" => {
                         // These operations consume their arguments
                         for arg in args {
-                            if let HirExpr::Ident(name) = arg {
+                            if let HirExpr::Ident(name, _) = arg {
                                 if let Err(e) = env.consume_variable(name) {
                                     self.errors.push(e);
                                     return Err(self.errors.clone());
@@ -435,16 +435,16 @@ impl LinearityChecker {
                 }
                 Ok(())
             }
-            HirExpr::Binary { left, op: _, right } => {
+            HirExpr::Binary { left, op: _, right, .. } => {
                 self.check_expr_with_env(left, env)?;
                 self.check_expr_with_env(right, env)?;
                 Ok(())
             }
-            HirExpr::Block(block) => {
+            HirExpr::Block(block, _) => {
                 self.check_block(block, env)?;
                 Ok(())
             }
-            HirExpr::If { condition, then_branch, else_branch } => {
+            HirExpr::If { condition, then_branch, else_branch, .. } => {
                 self.check_expr_with_env(condition, env)?;
                 
                 let mut then_env = env.clone();
@@ -487,15 +487,15 @@ impl LinearityChecker {
                 }
                 Ok(())
             }
-            HirExpr::Match { expr, arms } => {
+            HirExpr::Match { expr, arms, .. } => {
                 self.check_expr_with_env(expr, env)?;
                 
                 let mut max_usages = std::collections::HashMap::new();
                 let mut first_arm_usage = None;
 
-                for (_, arm_expr) in arms {
+                for arm in arms {
                     let mut arm_env = env.clone();
-                    self.check_expr_with_env(arm_expr, &mut arm_env)?;
+                    self.check_expr_with_env(&arm.body, &mut arm_env)?;
                     
                     if first_arm_usage.is_none() {
                         first_arm_usage = Some(arm_env.variables.clone());
@@ -529,7 +529,7 @@ impl LinearityChecker {
                 
                 Ok(())
             }
-            HirExpr::For { item, collection, body } => {
+            HirExpr::For { item, collection, body, .. } => {
                 self.check_expr_with_env(collection, env)?;
                 
                 let mut body_env = env.clone();
@@ -548,24 +548,24 @@ impl LinearityChecker {
                 
                 Ok(())
             }
-            HirExpr::Index { base, index } => {
+            HirExpr::Index { base, index, .. } => {
                 self.check_expr_with_env(base, env)?;
                 self.check_expr_with_env(index, env)?;
                 Ok(())
             }
-            HirExpr::Try(inner) => {
+            HirExpr::Try(inner, _) => {
                 self.check_expr_with_env(inner, env)
             }
-            HirExpr::Struct { name: _, fields } => {
+            HirExpr::Struct { name: _, fields, .. } => {
                 for (_, val) in fields {
                     self.check_expr_with_env(val, env)?;
                 }
                 Ok(())
             }
-            HirExpr::FieldAccess { base, field: _ } => {
+            HirExpr::FieldAccess { base, field: _, .. } => {
                 self.check_expr_with_env(base, env)
             }
-            HirExpr::While { condition, body } => {
+            HirExpr::While { condition, body, .. } => {
                 self.check_expr_with_env(condition, env)?;
                 self.check_block(body, env)?;
                 Ok(())

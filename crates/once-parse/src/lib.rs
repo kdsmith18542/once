@@ -62,6 +62,7 @@ pub struct FnDecl {
     pub effects: Option<EffectRow>,
     pub body: Block,
     pub span: Option<Span>,
+    pub is_public: bool,
 }
 
 /// Goal declaration for AI integration
@@ -74,6 +75,7 @@ pub struct GoalDecl {
     pub effects: Option<EffectRow>,
     pub body: Block,
     pub span: Option<Span>,
+    pub is_public: bool,
 }
 
 /// Function parameter
@@ -247,47 +249,62 @@ pub struct ReturnStmt {
 /// Expressions
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Expr {
-    Literal(Literal),
-    Ident(String),
-    Call { function: String, args: Vec<Expr> },
-    Binary { left: Box<Expr>, op: BinaryOp, right: Box<Expr> },
-    Block(Block),
+    Literal(Literal, Option<Span>),
+    Ident(String, Option<Span>),
+    Call { function: String, args: Vec<Expr>, span: Option<Span> },
+    Binary { left: Box<Expr>, op: BinaryOp, right: Box<Expr>, span: Option<Span> },
+    Block(Block, Option<Span>),
     If {
         condition: Box<Expr>,
         then_branch: Block,
         else_branch: Option<Box<Expr>>,
+        span: Option<Span>,
     },
     Match {
         expr: Box<Expr>,
-        arms: Vec<(Pattern, Expr)>,
+        arms: Vec<MatchArm>,
+        span: Option<Span>,
     },
     For {
         item: String,
         collection: Box<Expr>,
         body: Block,
+        span: Option<Span>,
     },
     /// Array indexing
     Index {
         base: Box<Expr>,
         index: Box<Expr>,
+        span: Option<Span>,
     },
     /// Try/unwrap operator
-    Try(Box<Expr>),
+    Try(Box<Expr>, Option<Span>),
     /// While loop
     While {
         condition: Box<Expr>,
         body: Block,
+        span: Option<Span>,
     },
     /// Struct literal: StructName { field: value, ... }
     Struct {
         name: String,
         fields: Vec<(String, Expr)>,
+        span: Option<Span>,
     },
     /// Field access: expr.field
     FieldAccess {
         base: Box<Expr>,
         field: String,
+        span: Option<Span>,
     },
+}
+
+/// A single arm in a match expression
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MatchArm {
+    pub pattern: Pattern,
+    pub guard: Option<Expr>,
+    pub body: Expr,
 }
 
 /// Patterns for match expressions
@@ -296,6 +313,11 @@ pub enum Pattern {
     Literal(Literal),
     Ident(String),
     Wildcard,
+    /// Enum variant pattern like `Some(x)` or `Ok(val)`
+    EnumVariant {
+        name: String,
+        fields: Vec<Pattern>,
+    },
 }
 
 /// Binary operators
@@ -378,8 +400,26 @@ impl OnceParser {
                 }
                 Token::Trait => items.push(Item::TraitDecl(Self::parse_trait_decl(&mut tokens)?)),
                 Token::Impl => items.push(Item::ImplBlock(Self::parse_impl_block(&mut tokens)?)),
+                Token::Pub | Token::Export => {
+                    // Consume visibility keyword, expect fn/goal
+                    let _vis_token = tokens.next().ok_or_else(|| "Expected item after visibility".to_string())?;
+                    match tokens.peek().map(|t| t.token.clone()) {
+                        Some(Token::Fn) => {
+                            tokens.next(); // consume fn
+                            let fn_decl = Self::parse_fn_decl_after_kw(&mut tokens, true)?;
+                            items.push(Item::FnDecl(fn_decl));
+                        }
+                        Some(Token::Goal) => {
+                            tokens.next(); // consume goal
+                            let goal_decl = Self::parse_goal_decl_after_kw(&mut tokens, true)?;
+                            items.push(Item::GoalDecl(goal_decl));
+                        }
+                        _ => return Err("Expected fn or goal after visibility keyword".to_string()),
+                    }
+                }
                 Token::Fn => {
-                    let fn_decl = Self::parse_fn_decl(&mut tokens)?;
+                    tokens.next(); // consume fn keyword
+                    let fn_decl = Self::parse_fn_decl_after_kw(&mut tokens, false)?;
                     items.push(Item::FnDecl(fn_decl));
                 }
                 Token::Let | Token::Const => {
@@ -391,7 +431,8 @@ impl OnceParser {
                     items.push(Item::LetDecl(let_decl));
                 }
                 Token::Goal => {
-                    let goal_decl = Self::parse_goal_decl(&mut tokens)?;
+                    tokens.next(); // consume goal keyword
+                    let goal_decl = Self::parse_goal_decl_after_kw(&mut tokens, false)?;
                     items.push(Item::GoalDecl(goal_decl));
                 }
                 Token::Import => {
@@ -409,11 +450,10 @@ impl OnceParser {
         Ok(Program { items })
     }
 
-    fn parse_fn_decl(tokens: &mut std::iter::Peekable<std::vec::IntoIter<TokenWithSpan>>) -> Result<FnDecl, String> {
-        // fn
-        let fn_token = tokens.next().ok_or_else(|| "Expected 'fn' token".to_string())?;
-        let start_span = Span::from(fn_token.span);
-        
+    fn parse_fn_decl_after_kw(tokens: &mut std::iter::Peekable<std::vec::IntoIter<TokenWithSpan>>, is_public: bool) -> Result<FnDecl, String> {
+        // peek for span (fn keyword already consumed by caller)
+        let start_span = tokens.peek().map(|t| Span::from(t.span)).unwrap_or(Span { start: 0, end: 0, line: 0, column: 0 });
+
         // name
         let name = match tokens.next() {
             Some(t) => match t.token {
@@ -531,13 +571,13 @@ impl OnceParser {
             effects,
             body,
             span: Some(start_span),
+            is_public,
         })
     }
 
-    fn parse_goal_decl(tokens: &mut std::iter::Peekable<std::vec::IntoIter<TokenWithSpan>>) -> Result<GoalDecl, String> {
-        // goal
-        let goal_token = tokens.next().ok_or_else(|| "Expected 'goal' token".to_string())?;
-        let start_span = Span::from(goal_token.span);
+    fn parse_goal_decl_after_kw(tokens: &mut std::iter::Peekable<std::vec::IntoIter<TokenWithSpan>>, is_public: bool) -> Result<GoalDecl, String> {
+        // goal keyword already consumed by caller
+        let start_span = tokens.peek().map(|t| Span::from(t.span)).unwrap_or(Span { start: 0, end: 0, line: 0, column: 0 });
 
         // name
         let name = match tokens.next() {
@@ -652,6 +692,7 @@ impl OnceParser {
             effects,
             body,
             span: Some(start_span),
+            is_public,
         })
     }
 
@@ -1071,7 +1112,7 @@ impl OnceParser {
             match t.token {
                 Token::RBrace => break,
                 Token::Fn => {
-                    methods.push(Self::parse_fn_decl(tokens)?);
+                    methods.push(Self::parse_fn_decl_after_kw(tokens, false)?);
                 }
                 _ => return Err("Expected method or '}' in trait".to_string()),
             }
@@ -1127,7 +1168,7 @@ impl OnceParser {
             match t.token {
                 Token::RBrace => break,
                 Token::Fn => {
-                    methods.push(Self::parse_fn_decl(tokens)?);
+                    methods.push(Self::parse_fn_decl_after_kw(tokens, false)?);
                 }
                 _ => return Err("Expected method or '}' in impl".to_string()),
             }
@@ -1313,6 +1354,12 @@ fn parse_param(tokens: &mut std::iter::Peekable<std::vec::IntoIter<TokenWithSpan
                 _ => {
                     let expr = Self::parse_expr(tokens)?;
                     statements.push(Stmt::Expr(expr));
+                    // Consume optional semicolon after expression statement
+                    if let Some(t) = tokens.peek() {
+                        if matches!(t.token, Token::Semicolon) {
+                            tokens.next();
+                        }
+                    }
                 }
             }
         }
@@ -1477,11 +1524,13 @@ Ok(ReturnStmt { value, span: Some(start_span) })
         Ok(UsingStmt { name, init, body, span: Some(start_span) })
     }
 
+    #[inline(never)]
     fn parse_expr(tokens: &mut std::iter::Peekable<std::vec::IntoIter<TokenWithSpan>>) -> Result<Expr, String> {
         Self::parse_pipeline_expr(tokens)
     }
 
     // Precedence level 1: Pipeline |>
+    #[inline(never)]
     fn parse_pipeline_expr(tokens: &mut std::iter::Peekable<std::vec::IntoIter<TokenWithSpan>>) -> Result<Expr, String> {
         let mut left = Self::parse_or_expr(tokens)?;
         loop {
@@ -1491,11 +1540,11 @@ Ok(ReturnStmt { value, span: Some(start_span) })
                     let right = Self::parse_or_expr(tokens)?;
                     // Pipeline: x |> f(y) desugars to f(x, y) or f(y)(x)
                     // For simplicity, we represent it as a call with the piped value as first arg
-                    if let Expr::Call { function, mut args } = right {
+                    if let Expr::Call { function, mut args, .. } = right {
                         args.insert(0, left);
-                        left = Expr::Call { function, args };
-                    } else if let Expr::Ident(function) = right {
-                        left = Expr::Call { function, args: vec![left] };
+                        left = Expr::Call { function, args, span: None };
+                    } else if let Expr::Ident(function, _) = right {
+                        left = Expr::Call { function, args: vec![left], span: None };
                     } else {
                         return Err("Expected function call after pipeline operator".to_string());
                     }
@@ -1515,7 +1564,7 @@ Ok(ReturnStmt { value, span: Some(start_span) })
                 if matches!(t.token, Token::OrOr) {
                     tokens.next();
                     let right = Self::parse_and_expr(tokens)?;
-                    left = Expr::Binary { left: Box::new(left), op: BinaryOp::Or, right: Box::new(right) };
+                    left = Expr::Binary { left: Box::new(left), op: BinaryOp::Or, right: Box::new(right), span: None };
                     continue;
                 }
             }
@@ -1532,7 +1581,7 @@ Ok(ReturnStmt { value, span: Some(start_span) })
                 if matches!(t.token, Token::AndAnd) {
                     tokens.next();
                     let right = Self::parse_eq_expr(tokens)?;
-                    left = Expr::Binary { left: Box::new(left), op: BinaryOp::And, right: Box::new(right) };
+                    left = Expr::Binary { left: Box::new(left), op: BinaryOp::And, right: Box::new(right), span: None };
                     continue;
                 }
             }
@@ -1550,13 +1599,13 @@ Ok(ReturnStmt { value, span: Some(start_span) })
                     Token::EqEq => {
                         tokens.next();
                         let right = Self::parse_cmp_expr(tokens)?;
-                        left = Expr::Binary { left: Box::new(left), op: BinaryOp::Eq, right: Box::new(right) };
+                        left = Expr::Binary { left: Box::new(left), op: BinaryOp::Eq, right: Box::new(right), span: None };
                         continue;
                     }
                     Token::Ne => {
                         tokens.next();
                         let right = Self::parse_cmp_expr(tokens)?;
-                        left = Expr::Binary { left: Box::new(left), op: BinaryOp::Ne, right: Box::new(right) };
+                        left = Expr::Binary { left: Box::new(left), op: BinaryOp::Ne, right: Box::new(right), span: None };
                         continue;
                     }
                     _ => {}
@@ -1576,25 +1625,25 @@ Ok(ReturnStmt { value, span: Some(start_span) })
                     Token::Lt => {
                         tokens.next();
                         let right = Self::parse_add_expr(tokens)?;
-                        left = Expr::Binary { left: Box::new(left), op: BinaryOp::Lt, right: Box::new(right) };
+                        left = Expr::Binary { left: Box::new(left), op: BinaryOp::Lt, right: Box::new(right), span: None };
                         continue;
                     }
                     Token::Le => {
                         tokens.next();
                         let right = Self::parse_add_expr(tokens)?;
-                        left = Expr::Binary { left: Box::new(left), op: BinaryOp::Le, right: Box::new(right) };
+                        left = Expr::Binary { left: Box::new(left), op: BinaryOp::Le, right: Box::new(right), span: None };
                         continue;
                     }
                     Token::Gt => {
                         tokens.next();
                         let right = Self::parse_add_expr(tokens)?;
-                        left = Expr::Binary { left: Box::new(left), op: BinaryOp::Gt, right: Box::new(right) };
+                        left = Expr::Binary { left: Box::new(left), op: BinaryOp::Gt, right: Box::new(right), span: None };
                         continue;
                     }
                     Token::Ge => {
                         tokens.next();
                         let right = Self::parse_add_expr(tokens)?;
-                        left = Expr::Binary { left: Box::new(left), op: BinaryOp::Ge, right: Box::new(right) };
+                        left = Expr::Binary { left: Box::new(left), op: BinaryOp::Ge, right: Box::new(right), span: None };
                         continue;
                     }
                     _ => {}
@@ -1606,6 +1655,7 @@ Ok(ReturnStmt { value, span: Some(start_span) })
     }
 
     // Precedence level 6: Additive +, -
+    #[inline(never)]
     fn parse_add_expr(tokens: &mut std::iter::Peekable<std::vec::IntoIter<TokenWithSpan>>) -> Result<Expr, String> {
         let mut left = Self::parse_mul_expr(tokens)?;
         loop {
@@ -1614,13 +1664,13 @@ Ok(ReturnStmt { value, span: Some(start_span) })
                     Token::Plus => {
                         tokens.next();
                         let right = Self::parse_mul_expr(tokens)?;
-                        left = Expr::Binary { left: Box::new(left), op: BinaryOp::Add, right: Box::new(right) };
+                        left = Expr::Binary { left: Box::new(left), op: BinaryOp::Add, right: Box::new(right), span: None };
                         continue;
                     }
                     Token::Minus => {
                         tokens.next();
                         let right = Self::parse_mul_expr(tokens)?;
-                        left = Expr::Binary { left: Box::new(left), op: BinaryOp::Sub, right: Box::new(right) };
+                        left = Expr::Binary { left: Box::new(left), op: BinaryOp::Sub, right: Box::new(right), span: None };
                         continue;
                     }
                     _ => {}
@@ -1632,6 +1682,7 @@ Ok(ReturnStmt { value, span: Some(start_span) })
     }
 
     // Precedence level 7: Multiplicative *, /, %
+    #[inline(never)]
     fn parse_mul_expr(tokens: &mut std::iter::Peekable<std::vec::IntoIter<TokenWithSpan>>) -> Result<Expr, String> {
         let mut left = Self::parse_prefix_expr(tokens)?;
         loop {
@@ -1640,19 +1691,19 @@ Ok(ReturnStmt { value, span: Some(start_span) })
                     Token::Star => {
                         tokens.next();
                         let right = Self::parse_prefix_expr(tokens)?;
-                        left = Expr::Binary { left: Box::new(left), op: BinaryOp::Mul, right: Box::new(right) };
+                        left = Expr::Binary { left: Box::new(left), op: BinaryOp::Mul, right: Box::new(right), span: None };
                         continue;
                     }
                     Token::Slash => {
                         tokens.next();
                         let right = Self::parse_prefix_expr(tokens)?;
-                        left = Expr::Binary { left: Box::new(left), op: BinaryOp::Div, right: Box::new(right) };
+                        left = Expr::Binary { left: Box::new(left), op: BinaryOp::Div, right: Box::new(right), span: None };
                         continue;
                     }
                     Token::Percent => {
                         tokens.next();
                         let right = Self::parse_prefix_expr(tokens)?;
-                        left = Expr::Binary { left: Box::new(left), op: BinaryOp::Div, right: Box::new(right) };
+                        left = Expr::Binary { left: Box::new(left), op: BinaryOp::Div, right: Box::new(right), span: None };
                         continue;
                     }
                     _ => {}
@@ -1672,9 +1723,10 @@ Ok(ReturnStmt { value, span: Some(start_span) })
                     let expr = Self::parse_prefix_expr(tokens)?;
                     // Represent negation as 0 - expr
                     Ok(Expr::Binary {
-                        left: Box::new(Expr::Literal(Literal::Int(0))),
+                        left: Box::new(Expr::Literal(Literal::Int(0), None)),
                         op: BinaryOp::Sub,
                         right: Box::new(expr),
+                        span: None,
                     })
                 }
                 Token::Bang => {
@@ -1684,18 +1736,19 @@ Ok(ReturnStmt { value, span: Some(start_span) })
                     Ok(Expr::Binary {
                         left: Box::new(expr),
                         op: BinaryOp::Eq,
-                        right: Box::new(Expr::Literal(Literal::Bool(false))),
+                        right: Box::new(Expr::Literal(Literal::Bool(false), None)),
+                        span: None,
                     })
                 }
                 Token::Await => {
                     tokens.next();
                     let expr = Self::parse_prefix_expr(tokens)?;
-                    Ok(Expr::Call { function: "await".to_string(), args: vec![expr] })
+                    Ok(Expr::Call { function: "await".to_string(), args: vec![expr], span: None })
                 }
                 Token::Try => {
                     tokens.next();
                     let expr = Self::parse_prefix_expr(tokens)?;
-                    Ok(Expr::Try(Box::new(expr)))
+                    Ok(Expr::Try(Box::new(expr), None))
                 }
                 _ => Self::parse_postfix_expr(tokens),
             }
@@ -1729,8 +1782,8 @@ Ok(ReturnStmt { value, span: Some(start_span) })
                         if !matches!(tokens.next().map(|t| t.token), Some(Token::RParen)) {
                             return Err("Expected ')'".to_string());
                         }
-                        if let Expr::Ident(name) = expr {
-                            expr = Expr::Call { function: name, args };
+                        if let Expr::Ident(name, _) = expr {
+                            expr = Expr::Call { function: name, args, span: None };
                         } else {
                             // For now, only support direct function calls
                             return Err("Expected function name before '('".to_string());
@@ -1744,7 +1797,7 @@ Ok(ReturnStmt { value, span: Some(start_span) })
                         if !matches!(tokens.next().map(|t| t.token), Some(Token::RBracket)) {
                             return Err("Expected ']'".to_string());
                         }
-                        expr = Expr::Index { base: Box::new(expr), index: Box::new(index) };
+                        expr = Expr::Index { base: Box::new(expr), index: Box::new(index), span: None };
                         continue;
                     }
                     Token::Dot => {
@@ -1757,12 +1810,12 @@ Ok(ReturnStmt { value, span: Some(start_span) })
                             },
                             None => return Err("Expected field name after '.'".to_string()),
                         };
-                        expr = Expr::FieldAccess { base: Box::new(expr), field };
+                        expr = Expr::FieldAccess { base: Box::new(expr), field, span: None };
                         continue;
                     }
                     Token::LBrace => {
                         // Struct literal: only if the ident starts with uppercase (Once convention)
-                        if let Expr::Ident(name) = &expr {
+                        if let Expr::Ident(name, _) = &expr {
                             if name.chars().next().map_or(false, |c| c.is_uppercase()) {
                                 let name = name.clone();
                                 tokens.next(); // consume {
@@ -1790,7 +1843,7 @@ Ok(ReturnStmt { value, span: Some(start_span) })
                                         }
                                     }
                                 }
-                                expr = Expr::Struct { name, fields };
+                                expr = Expr::Struct { name, fields, span: None };
                                 continue;
                             }
                         }
@@ -1806,46 +1859,47 @@ Ok(ReturnStmt { value, span: Some(start_span) })
     }
 
     // Precedence level 10: Primary expressions
+    #[inline(never)]
     fn parse_primary(tokens: &mut std::iter::Peekable<std::vec::IntoIter<TokenWithSpan>>) -> Result<Expr, String> {
         match tokens.peek() {
             Some(t) => match &t.token {
                 Token::IntLit(n) => {
                     let n = *n;
                     tokens.next();
-                    Ok(Expr::Literal(Literal::Int(n)))
+                    Ok(Expr::Literal(Literal::Int(n), None))
                 }
                 Token::FloatLit(n) => {
                     let n = *n;
                     tokens.next();
-                    Ok(Expr::Literal(Literal::Float(n)))
+                    Ok(Expr::Literal(Literal::Float(n), None))
                 }
                 Token::StringLit(s) => {
                     let s = s.clone();
                     tokens.next();
-                    Ok(Expr::Literal(Literal::String(s)))
+                    Ok(Expr::Literal(Literal::String(s), None))
                 }
                 Token::True => {
                     tokens.next();
-                    Ok(Expr::Literal(Literal::Bool(true)))
+                    Ok(Expr::Literal(Literal::Bool(true), None))
                 }
                 Token::False => {
                     tokens.next();
-                    Ok(Expr::Literal(Literal::Bool(false)))
+                    Ok(Expr::Literal(Literal::Bool(false), None))
                 }
                 Token::Unit => {
                     tokens.next();
-                    Ok(Expr::Literal(Literal::Unit))
+                    Ok(Expr::Literal(Literal::Unit, None))
                 }
                 Token::Ident(name) => {
                     let name = name.clone();
                     tokens.next();
-                    Ok(Expr::Ident(name))
+                    Ok(Expr::Ident(name, None))
                 }
                 Token::Vec | Token::Option | Token::Result | Token::Chan | Token::Actor | Token::File |
                 Token::Ok | Token::Err | Token::Some | Token::None => {
                     let name = format!("{:?}", t.token);
                     tokens.next();
-                    Ok(Expr::Ident(name))
+                    Ok(Expr::Ident(name, None))
                 }
                 Token::LParen => {
                     tokens.next(); // consume (
@@ -1861,7 +1915,7 @@ Ok(ReturnStmt { value, span: Some(start_span) })
                     if !matches!(tokens.next().map(|t| t.token), Some(Token::RBrace)) {
                         return Err("Expected '}'".to_string());
                     }
-                    Ok(Expr::Block(block))
+                    Ok(Expr::Block(block, None))
                 }
                 Token::If => Self::parse_if_expr(tokens),
                 Token::Match => Self::parse_match_expr(tokens),
@@ -1872,7 +1926,7 @@ Ok(ReturnStmt { value, span: Some(start_span) })
                     Self::expect_token(tokens, Token::LParen)?;
                     let expr = Self::parse_expr(tokens)?;
                     Self::expect_token(tokens, Token::RParen)?;
-                    Ok(Expr::Call { function: "spawn".to_string(), args: vec![expr] })
+                    Ok(Expr::Call { function: "spawn".to_string(), args: vec![expr], span: None })
                 }
                 _ => Err(format!("Unexpected token: {:?}", t.token)),
             },
@@ -1916,7 +1970,7 @@ Ok(ReturnStmt { value, span: Some(start_span) })
                         if !matches!(tokens.next().map(|t| t.token), Some(Token::RBrace)) {
                             return Err("Expected '}' after else branch".to_string());
                         }
-                        Some(Box::new(Expr::Block(block)))
+                        Some(Box::new(Expr::Block(block, None)))
                     } else if matches!(t.token, Token::If) {
                         Some(Box::new(Self::parse_if_expr(tokens)?))
                     } else {
@@ -1932,7 +1986,7 @@ Ok(ReturnStmt { value, span: Some(start_span) })
             None
         };
 
-        Ok(Expr::If { condition, then_branch, else_branch })
+        Ok(Expr::If { condition, then_branch, else_branch, span: None })
     }
 
     fn parse_match_expr(tokens: &mut std::iter::Peekable<std::vec::IntoIter<TokenWithSpan>>) -> Result<Expr, String> {
@@ -1956,13 +2010,25 @@ Ok(ReturnStmt { value, span: Some(start_span) })
 
             let pattern = Self::parse_pattern(tokens)?;
 
+            // Check for optional guard
+            let guard = if let Some(t) = tokens.peek() {
+                if matches!(t.token, Token::If) {
+                    tokens.next(); // consume 'if'
+                    Some(Self::parse_expr(tokens)?)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
             // Expect =>
             if !matches!(tokens.next().map(|t| t.token), Some(Token::FatArrow)) {
                 return Err("Expected '=>' after match pattern".to_string());
             }
 
-            let arm_expr = Self::parse_expr(tokens)?;
-            arms.push((pattern, arm_expr));
+            let body = Self::parse_expr(tokens)?;
+            arms.push(MatchArm { pattern, guard, body });
 
             // Optional comma between arms
             if let Some(t) = tokens.peek() {
@@ -1972,7 +2038,7 @@ Ok(ReturnStmt { value, span: Some(start_span) })
             }
         }
 
-        Ok(Expr::Match { expr, arms })
+        Ok(Expr::Match { expr, arms, span: None })
     }
 
     fn parse_for_expr(tokens: &mut std::iter::Peekable<std::vec::IntoIter<TokenWithSpan>>) -> Result<Expr, String> {
@@ -2001,7 +2067,7 @@ Ok(ReturnStmt { value, span: Some(start_span) })
             return Err("Expected '}' after for body".to_string());
         }
 
-        Ok(Expr::For { item, collection, body })
+        Ok(Expr::For { item, collection, body, span: None })
     }
 
     fn parse_while_expr(tokens: &mut std::iter::Peekable<std::vec::IntoIter<TokenWithSpan>>) -> Result<Expr, String> {
@@ -2017,7 +2083,7 @@ Ok(ReturnStmt { value, span: Some(start_span) })
             return Err("Expected '}' after while body".to_string());
         }
 
-        Ok(Expr::While { condition, body })
+        Ok(Expr::While { condition, body, span: None })
     }
 
     fn parse_pattern(tokens: &mut std::iter::Peekable<std::vec::IntoIter<TokenWithSpan>>) -> Result<Pattern, String> {
@@ -2026,6 +2092,18 @@ Ok(ReturnStmt { value, span: Some(start_span) })
                 Token::Ident(name) => {
                     if name == "_" {
                         Ok(Pattern::Wildcard)
+                    } else if matches!(tokens.peek().map(|t| &t.token), Some(Token::LParen)) {
+                        // Enum variant pattern: Ident(fields...)
+                        tokens.next(); // consume (
+                        let mut fields = Vec::new();
+                        while !matches!(tokens.peek().map(|t| &t.token), Some(Token::RParen)) {
+                            fields.push(Self::parse_pattern(tokens)?);
+                            if matches!(tokens.peek().map(|t| &t.token), Some(Token::Comma)) {
+                                tokens.next(); // consume ,
+                            }
+                        }
+                        tokens.next(); // consume )
+                        Ok(Pattern::EnumVariant { name, fields })
                     } else {
                         Ok(Pattern::Ident(name))
                     }
@@ -2156,7 +2234,7 @@ mod tests {
         
         if let Item::LetDecl(let_decl) = &program.items[0] {
             assert_eq!(let_decl.name, "x");
-            assert_eq!(let_decl.value, Expr::Literal(Literal::Int(42)));
+            assert_eq!(let_decl.value, Expr::Literal(Literal::Int(42), None));
         } else {
             panic!("Expected let declaration");
         }
@@ -2258,7 +2336,7 @@ mod tests {
         if let Item::FnDecl(fn_decl) = &program.items[0] {
             // first statement should be a Let with a Block as its value
             if let Some(Stmt::Let(let_stmt)) = fn_decl.body.statements.get(0) {
-                if let Expr::Block(inner_block) = &let_stmt.value {
+                if let Expr::Block(inner_block, _) = &let_stmt.value {
                     assert!(inner_block.span.is_some());
                 } else {
                     panic!("Expected inner Block as value of Let statement");
@@ -2281,10 +2359,10 @@ mod tests {
         if let Item::FnDecl(fn_decl) = &program.items[0] {
             assert!(fn_decl.body.span.is_some());
             if let Some(Stmt::Let(let_decl)) = fn_decl.body.statements.get(0) {
-                if let Expr::Block(outer_block) = &let_decl.value {
+                if let Expr::Block(outer_block, _) = &let_decl.value {
                     assert!(outer_block.span.is_some());
                     if let Some(stmt) = outer_block.statements.get(0) {
-                        if let Stmt::Expr(Expr::Block(inner_block)) = stmt {
+                        if let Stmt::Expr(Expr::Block(inner_block, _)) = stmt {
                             assert!(inner_block.span.is_some());
                         }
                     }
@@ -2305,13 +2383,13 @@ mod tests {
         if let Item::FnDecl(fn_decl) = &program.items[0] {
             assert!(fn_decl.body.span.is_some());
             if let Some(Stmt::Let(let_decl)) = fn_decl.body.statements.get(0) {
-                if let Expr::Block(outer_block) = &let_decl.value {
+                if let Expr::Block(outer_block, _) = &let_decl.value {
                     assert!(outer_block.span.is_some());
                     if let Some(stmt) = outer_block.statements.get(0) {
-                        if let Stmt::Expr(Expr::Block(mid_block)) = stmt {
+                        if let Stmt::Expr(Expr::Block(mid_block, _)) = stmt {
                             assert!(mid_block.span.is_some());
                             if let Some(inner_stmt) = mid_block.statements.get(0) {
-                                if let Stmt::Expr(Expr::Block(inner_block)) = inner_stmt {
+                                if let Stmt::Expr(Expr::Block(inner_block, _)) = inner_stmt {
                                     assert!(inner_block.span.is_some());
                                 }
                             }

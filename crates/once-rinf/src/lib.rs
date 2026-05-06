@@ -212,7 +212,7 @@ impl RegionSolver {
             HirStmt::Expr(expr) => {
                 self.generate_expr_constraints(expr, region)?;
             }
-            HirStmt::Continue | HirStmt::Break => {}
+            HirStmt::Continue(_) | HirStmt::Break(_) => {}
             HirStmt::Using(using_stmt) => {
                 // Check init expression constraints
                 self.generate_expr_constraints(&using_stmt.init, region.clone())?;
@@ -227,13 +227,13 @@ impl RegionSolver {
 
     fn generate_expr_constraints(&mut self, expr: &HirExpr, region: Region) -> Result<(), Vec<RegionError>> {
         match expr {
-            HirExpr::Literal(_) => {
+            HirExpr::Literal(_, _) => {
                 // Literals don't need region constraints
             }
-            HirExpr::Ident(_) => {
+            HirExpr::Ident(_, _) => {
                 // Variable references don't need region constraints
             }
-            HirExpr::Call { function, args } => {
+            HirExpr::Call { function, args, .. } => {
                 // Generate constraints for arguments
                 for arg in args {
                     self.generate_expr_constraints(arg, region.clone())?;
@@ -249,11 +249,11 @@ impl RegionSolver {
                     });
                 }
             }
-            HirExpr::Binary { left, op: _, right } => {
+            HirExpr::Binary { left, op: _, right, .. } => {
                 self.generate_expr_constraints(left, region.clone())?;
                 self.generate_expr_constraints(right, region.clone())?;
             }
-            HirExpr::Block(block) => {
+            HirExpr::Block(block, _) => {
                 // Create subregion for block
                 let subregion = self.create_region("block", false);
                 self.constraints.push(RegionConstraint::Subregion {
@@ -263,7 +263,7 @@ impl RegionSolver {
                 
                 self.generate_block_constraints(block, subregion)?;
             }
-            HirExpr::If { condition, then_branch, else_branch } => {
+            HirExpr::If { condition, then_branch, else_branch, .. } => {
                 self.generate_expr_constraints(condition, region.clone())?;
                 let subregion = self.create_region("then_branch", false);
                 self.constraints.push(RegionConstraint::Subregion {
@@ -280,15 +280,15 @@ impl RegionSolver {
                     self.generate_expr_constraints(else_expr, else_subregion)?;
                 }
             }
-            HirExpr::Match { expr, arms } => {
+            HirExpr::Match { expr, arms, .. } => {
                 self.generate_expr_constraints(expr, region.clone())?;
-                for (_, arm_expr) in arms {
+                for arm in arms {
                     let arm_subregion = self.create_region("match_arm", false);
                     self.constraints.push(RegionConstraint::Subregion {
                         sub: arm_subregion.clone(),
                         super_: region.clone(),
                     });
-                    self.generate_expr_constraints(arm_expr, arm_subregion)?;
+                    self.generate_expr_constraints(&arm.body, arm_subregion)?;
                 }
             }
             HirExpr::For { collection, body, .. } => {
@@ -300,7 +300,7 @@ impl RegionSolver {
                 });
                 self.generate_block_constraints(body, subregion)?;
             }
-            HirExpr::While { condition, body } => {
+            HirExpr::While { condition, body, .. } => {
                 self.generate_expr_constraints(condition, region.clone())?;
                 let subregion = self.create_region("while_body", false);
                 self.constraints.push(RegionConstraint::Subregion {
@@ -309,11 +309,11 @@ impl RegionSolver {
                 });
                 self.generate_block_constraints(body, subregion)?;
             }
-            HirExpr::Index { base, index } => {
+            HirExpr::Index { base, index, .. } => {
                 self.generate_expr_constraints(base, region.clone())?;
                 self.generate_expr_constraints(index, region)?;
             }
-            HirExpr::Try(inner) => {
+            HirExpr::Try(inner, _) => {
                 self.generate_expr_constraints(inner, region)?;
             }
             HirExpr::Struct { fields, .. } => {
@@ -586,7 +586,14 @@ impl RegionChecker {
         for (region, node) in &dag.nodes {
             explanation.push_str(&format!("Region {}:\n", region));
             explanation.push_str(&format!("  Allocations: {}\n", node.allocations.len()));
-            explanation.push_str(&format!("  Escapes: {}\n", node.escapes.len()));
+            if node.escapes.is_empty() {
+                explanation.push_str("    Escapes: none\n");
+            } else {
+                explanation.push_str(&format!("    Escapes: {} value(s)\n", node.escapes.len()));
+                for escape in &node.escapes {
+                    explanation.push_str(&format!("      - {}\n", escape));
+                }
+            }
             if let Some(free_point) = node.free_point {
                 explanation.push_str(&format!("  Free point: {}\n", free_point));
             }

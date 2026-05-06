@@ -103,13 +103,14 @@ impl OnceLsp {
         (Some(ast), Some(hir))
     }
 
-    /// Update a document
+    /// Update a document — re-parses so AST/HIR stay current
     pub fn update_document(&mut self, uri: String, content: String, version: i32) {
+        let (ast, hir) = self.parse_document(&content);
         if let Some(document) = self.documents.get_mut(&uri) {
             document.content = content;
             document.version = version;
-            document.ast = None;
-            document.hir = None;
+            document.ast = ast;
+            document.hir = hir;
         }
     }
 
@@ -120,8 +121,54 @@ impl OnceLsp {
     }
 
     /// Get completions for a position
-    pub fn get_completions(&self, _uri: &str, _line: u32, _character: u32) -> Vec<CompletionItem> {
+    pub fn get_completions(&self, uri: &str, _line: u32, _character: u32) -> Vec<CompletionItem> {
         let mut completions = Vec::new();
+        
+        // Add in-scope variables from the document's HIR
+        if let Some(doc) = self.documents.get(uri) {
+            if let Some(hir) = &doc.hir {
+                for item in &hir.items {
+                    match item {
+                        once_hir::HirItem::FnDecl(fn_decl) => {
+                            completions.push(CompletionItem {
+                                label: fn_decl.name.clone(),
+                                kind: CompletionItemKind::Function,
+                                detail: Some(match &fn_decl.return_type {
+                                    Some(ty) => format!("fn({} params) -> {:?}", fn_decl.params.len(), ty),
+                                    None => format!("fn({} params)", fn_decl.params.len()),
+                                }),
+                                documentation: Some(format!("Function {}", fn_decl.name)),
+                            });
+                        }
+                        once_hir::HirItem::LetDecl(let_decl) => {
+                            completions.push(CompletionItem {
+                                label: let_decl.name.clone(),
+                                kind: CompletionItemKind::Variable,
+                                detail: let_decl.type_annotation.as_ref().map(|t| format!("{:?}", t)),
+                                documentation: Some(format!("Variable {}", let_decl.name)),
+                            });
+                        }
+                        once_hir::HirItem::TypeDecl(type_decl) => {
+                            completions.push(CompletionItem {
+                                label: type_decl.name.clone(),
+                                kind: CompletionItemKind::Enum,
+                                detail: Some(format!("{} variants", type_decl.variants.len())),
+                                documentation: Some(format!("Type {}", type_decl.name)),
+                            });
+                        }
+                        once_hir::HirItem::StructDecl(s) => {
+                            completions.push(CompletionItem {
+                                label: s.name.clone(),
+                                kind: CompletionItemKind::Struct,
+                                detail: Some(format!("{} fields", s.fields.len())),
+                                documentation: Some(format!("Struct {}", s.name)),
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
 
         // Add built-in types
         completions.push(CompletionItem {
@@ -146,7 +193,7 @@ impl OnceLsp {
         });
 
         // Add keywords
-        let keywords = vec!["fn", "let", "if", "else", "while", "for", "return", "async", "spawn", "await"];
+        let keywords = vec!["fn", "let", "if", "else", "while", "for", "return", "spawn", "using", "match"];
         for keyword in keywords {
             completions.push(CompletionItem {
                 label: keyword.to_string(),
@@ -159,10 +206,45 @@ impl OnceLsp {
         completions
     }
 
-    /// Get hover information for a position
-    pub fn get_hover(&self, _uri: &str, _line: u32, _character: u32) -> Option<HoverInfo> {
+    /// Get hover information for a position with real type/effect info
+    pub fn get_hover(&self, uri: &str, _line: u32, _character: u32) -> Option<HoverInfo> {
+        if let Some(doc) = self.documents.get(uri) {
+            if let Some(hir) = &doc.hir {
+                // Run type checker to get inferred types
+                let mut type_checker = once_ty::TypeChecker::new();
+                if let Ok(()) = type_checker.check(hir) {
+                    let mut parts = Vec::new();
+                    for (name, scheme) in &type_checker.env.bindings {
+                        if !matches!(name.as_str(), "Unit" | "Int" | "Bool" | "Float" | "Str" | "print" | "spawn") {
+                            parts.push(format!("{}: {}", name, scheme.ty));
+                        }
+                    }
+                    if !parts.is_empty() {
+                        return Some(HoverInfo {
+                            contents: parts.join("\n"),
+                            range: None,
+                        });
+                    }
+                }
+                
+                // Run effect checker for effect info
+                let mut effect_checker = once_ty::effects::EffectChecker::new();
+                if let Ok(()) = effect_checker.check(hir) {
+                    let mut parts = Vec::new();
+                    for (name, row) in &effect_checker.env.bindings {
+                        parts.push(format!("{} !{}", name, row));
+                    }
+                    if !parts.is_empty() {
+                        return Some(HoverInfo {
+                            contents: format!("Effects:\n{}", parts.join("\n")),
+                            range: None,
+                        });
+                    }
+                }
+            }
+        }
         Some(HoverInfo {
-            contents: "Once language symbol".to_string(),
+            contents: "Once language symbol (run type checker for details)".to_string(),
             range: None,
         })
     }
@@ -177,18 +259,42 @@ impl OnceLsp {
         None
     }
     
-    /// Find definition in HIR
-    fn find_definition_in_hir(&self, hir: &HirProgram, _line: u32, _character: u32) -> Option<Location> {
-        // For now, return the first function or variable definition
-        // In a full implementation, we'd need to track source positions
-        for item in &hir.items {
+    /// Find definition in HIR with symbol index
+    fn find_definition_in_hir(&self, hir: &HirProgram, line: u32, _character: u32) -> Option<Location> {
+        // Build a symbol index mapping names to their HIR item index
+        let mut symbol_index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for (i, item) in hir.items.iter().enumerate() {
+            match item {
+                once_hir::HirItem::FnDecl(fn_decl) => {
+                    symbol_index.insert(fn_decl.name.clone(), i);
+                }
+                once_hir::HirItem::LetDecl(let_decl) => {
+                    symbol_index.insert(let_decl.name.clone(), i);
+                }
+                once_hir::HirItem::TypeDecl(type_decl) => {
+                    symbol_index.insert(type_decl.name.clone(), i);
+                }
+                once_hir::HirItem::StructDecl(s) => {
+                    symbol_index.insert(s.name.clone(), i);
+                }
+                once_hir::HirItem::TraitDecl(t) => {
+                    symbol_index.insert(t.name.clone(), i);
+                }
+                once_hir::HirItem::ImplBlock(_) => {}
+            }
+        }
+        
+        // Use line number as a rough position estimate; walk items to find the one at that line
+        let item_index = line as usize;
+        if item_index < hir.items.len() {
+            let item = &hir.items[item_index];
             match item {
                 once_hir::HirItem::FnDecl(fn_decl) => {
                     return Some(Location {
                         uri: "file://current".to_string(),
                         range: Range {
-                            start: Position { line: 0, character: 0 },
-                            end: Position { line: 0, character: fn_decl.name.len() as u32 },
+                            start: Position { line, character: 0 },
+                            end: Position { line, character: 3 + fn_decl.name.len() as u32 }, // "fn " + name
                         },
                     });
                 }
@@ -196,8 +302,8 @@ impl OnceLsp {
                     return Some(Location {
                         uri: "file://current".to_string(),
                         range: Range {
-                            start: Position { line: 0, character: 0 },
-                            end: Position { line: 0, character: let_decl.name.len() as u32 },
+                            start: Position { line, character: 0 },
+                            end: Position { line, character: 4 + let_decl.name.len() as u32 }, // "let " + name
                         },
                     });
                 }
@@ -205,12 +311,21 @@ impl OnceLsp {
                     return Some(Location {
                         uri: "file://current".to_string(),
                         range: Range {
-                            start: Position { line: 0, character: 0 },
-                            end: Position { line: 0, character: type_decl.name.len() as u32 },
+                            start: Position { line, character: 0 },
+                            end: Position { line, character: 5 + type_decl.name.len() as u32 },
                         },
                     });
                 }
-                once_hir::HirItem::StructDecl(_) | once_hir::HirItem::TraitDecl(_) | once_hir::HirItem::ImplBlock(_) => {}
+                once_hir::HirItem::StructDecl(s) => {
+                    return Some(Location {
+                        uri: "file://current".to_string(),
+                        range: Range {
+                            start: Position { line, character: 0 },
+                            end: Position { line, character: 5 + s.name.len() as u32 },
+                        },
+                    });
+                }
+                _ => {}
             }
         }
         None
@@ -449,7 +564,7 @@ impl OnceLsp {
                         once_hir::HirItem::LetDecl(let_decl) => {
                             // Check for missing type annotation
                             match &let_decl.value {
-                                once_hir::HirExpr::Literal(_) => {
+                                once_hir::HirExpr::Literal(_, _) => {
                                     // Literals are fine without type annotation
                                 }
                                 once_hir::HirExpr::If { .. } | once_hir::HirExpr::Match { .. } | once_hir::HirExpr::For { .. } => {
@@ -842,10 +957,12 @@ use tower_lsp::lsp_types::{
     InitializeParams, InitializeResult, InitializedParams, ServerCapabilities,
     TextDocumentSyncCapability, TextDocumentSyncKind,
     CompletionOptions, HoverProviderCapability, OneOf,
-    DidOpenTextDocumentParams, DidChangeTextDocumentParams,
+    DidOpenTextDocumentParams, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
     CompletionParams, CompletionResponse,
-    HoverParams, Hover, GotoDefinitionParams, GotoDefinitionResponse,
-    Diagnostic, DiagnosticSeverity, MessageType,
+    HoverParams, Hover, HoverContents, MarkedString,
+    GotoDefinitionParams, GotoDefinitionResponse,
+    ReferenceParams, RenameParams, DocumentFormattingParams,
+    Diagnostic, DiagnosticSeverity, MessageType, Documentation, Url,
 };
 use std::sync::Mutex;
 use once_lex::Lexer;
@@ -853,6 +970,36 @@ use once_parse::OnceParser;
 use once_hir::HirBuilder;
 
 /// Tower-LSP backend that wraps OnceLsp
+fn convert_completion_kind(kind: &CompletionItemKind) -> tower_lsp::lsp_types::CompletionItemKind {
+    match kind {
+        CompletionItemKind::Text => tower_lsp::lsp_types::CompletionItemKind::TEXT,
+        CompletionItemKind::Method => tower_lsp::lsp_types::CompletionItemKind::METHOD,
+        CompletionItemKind::Function => tower_lsp::lsp_types::CompletionItemKind::FUNCTION,
+        CompletionItemKind::Constructor => tower_lsp::lsp_types::CompletionItemKind::CONSTRUCTOR,
+        CompletionItemKind::Field => tower_lsp::lsp_types::CompletionItemKind::FIELD,
+        CompletionItemKind::Variable => tower_lsp::lsp_types::CompletionItemKind::VARIABLE,
+        CompletionItemKind::Class => tower_lsp::lsp_types::CompletionItemKind::CLASS,
+        CompletionItemKind::Interface => tower_lsp::lsp_types::CompletionItemKind::INTERFACE,
+        CompletionItemKind::Module => tower_lsp::lsp_types::CompletionItemKind::MODULE,
+        CompletionItemKind::Property => tower_lsp::lsp_types::CompletionItemKind::PROPERTY,
+        CompletionItemKind::Unit => tower_lsp::lsp_types::CompletionItemKind::UNIT,
+        CompletionItemKind::Value => tower_lsp::lsp_types::CompletionItemKind::VALUE,
+        CompletionItemKind::Enum => tower_lsp::lsp_types::CompletionItemKind::ENUM,
+        CompletionItemKind::Keyword => tower_lsp::lsp_types::CompletionItemKind::KEYWORD,
+        CompletionItemKind::Snippet => tower_lsp::lsp_types::CompletionItemKind::SNIPPET,
+        CompletionItemKind::Color => tower_lsp::lsp_types::CompletionItemKind::COLOR,
+        CompletionItemKind::File => tower_lsp::lsp_types::CompletionItemKind::FILE,
+        CompletionItemKind::Reference => tower_lsp::lsp_types::CompletionItemKind::REFERENCE,
+        CompletionItemKind::Folder => tower_lsp::lsp_types::CompletionItemKind::FOLDER,
+        CompletionItemKind::EnumMember => tower_lsp::lsp_types::CompletionItemKind::ENUM_MEMBER,
+        CompletionItemKind::Constant => tower_lsp::lsp_types::CompletionItemKind::CONSTANT,
+        CompletionItemKind::Struct => tower_lsp::lsp_types::CompletionItemKind::STRUCT,
+        CompletionItemKind::Event => tower_lsp::lsp_types::CompletionItemKind::EVENT,
+        CompletionItemKind::Operator => tower_lsp::lsp_types::CompletionItemKind::OPERATOR,
+        CompletionItemKind::TypeParameter => tower_lsp::lsp_types::CompletionItemKind::TYPE_PARAMETER,
+    }
+}
+
 struct Backend {
     client: Client,
     lsp: Mutex<OnceLsp>,
@@ -868,6 +1015,7 @@ impl LanguageServer for Backend {
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 definition_provider: Some(OneOf::Left(true)),
                 references_provider: Some(OneOf::Left(true)),
+                document_formatting_provider: Some(OneOf::Left(true)),
                 ..Default::default()
             },
             ..Default::default()
@@ -883,39 +1031,124 @@ impl LanguageServer for Backend {
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
-        let uri = params.text_document.uri.clone();
+        let uri = params.text_document.uri.to_string();
         let content = params.text_document.text.clone();
-        
-        // Parse and run diagnostics
+        let version = params.text_document.version;
+
+        self.lsp.lock().unwrap().open_document(uri.clone(), content.clone(), version);
         let diagnostics = self.run_diagnostics(&content);
-        
-        self.client.publish_diagnostics(uri, diagnostics, None).await;
+        self.client.publish_diagnostics(Url::parse(&uri).unwrap(), diagnostics, None).await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
-        let uri = params.text_document.uri.clone();
+        let uri = params.text_document.uri.to_string();
         let content = params.content_changes.first()
             .map(|c| c.text.clone())
             .unwrap_or_default();
-        
+        let version = params.text_document.version;
+
+        self.lsp.lock().unwrap().update_document(uri.clone(), content.clone(), version);
         let diagnostics = self.run_diagnostics(&content);
-        self.client.publish_diagnostics(uri, diagnostics, None).await;
+        self.client.publish_diagnostics(Url::parse(&uri).unwrap(), diagnostics, None).await;
     }
 
-    async fn completion(&self, _params: CompletionParams) -> LspResult<Option<CompletionResponse>> {
-        Ok(Some(CompletionResponse::Array(vec![])))
+    async fn did_close(&self, params: DidCloseTextDocumentParams) {
+        let uri = params.text_document.uri.to_string();
+        self.lsp.lock().unwrap().close_document(uri);
     }
 
-    async fn hover(&self, _params: HoverParams) -> LspResult<Option<Hover>> {
-        Ok(None)
+    async fn completion(&self, params: CompletionParams) -> LspResult<Option<CompletionResponse>> {
+        let uri = params.text_document_position.text_document.uri.to_string();
+        let line = params.text_document_position.position.line;
+        let character = params.text_document_position.position.character;
+
+        let lsp = self.lsp.lock().unwrap();
+        let items = lsp.get_completions(&uri, line, character);
+        drop(lsp);
+
+        let lsp_items: Vec<lsp_types::CompletionItem> = items.into_iter()
+            .map(|item| lsp_types::CompletionItem {
+                label: item.label,
+                kind: Some(convert_completion_kind(&item.kind)),
+                detail: item.detail,
+                documentation: item.documentation.map(Documentation::String),
+                ..Default::default()
+            })
+            .collect();
+
+        Ok(Some(CompletionResponse::Array(lsp_items)))
     }
 
-    async fn goto_definition(&self, _params: GotoDefinitionParams) -> LspResult<Option<GotoDefinitionResponse>> {
-        Ok(None)
+    async fn hover(&self, params: HoverParams) -> LspResult<Option<Hover>> {
+        let uri = params.text_document_position_params.text_document.uri.to_string();
+        let line = params.text_document_position_params.position.line;
+        let character = params.text_document_position_params.position.character;
+
+        let lsp = self.lsp.lock().unwrap();
+        let hover_info = lsp.get_hover(&uri, line, character);
+        drop(lsp);
+
+        match hover_info {
+            Some(info) => Ok(Some(Hover {
+                contents: HoverContents::Scalar(MarkedString::String(info.contents)),
+                range: info.range.map(|r| lsp_types::Range {
+                    start: lsp_types::Position { line: r.start.line, character: r.start.character },
+                    end: lsp_types::Position { line: r.end.line, character: r.end.character },
+                }),
+            })),
+            None => Ok(None),
+        }
+    }
+
+    async fn goto_definition(&self, params: GotoDefinitionParams) -> LspResult<Option<GotoDefinitionResponse>> {
+        let uri = params.text_document_position_params.text_document.uri.to_string();
+        let line = params.text_document_position_params.position.line;
+        let character = params.text_document_position_params.position.character;
+
+        let lsp = self.lsp.lock().unwrap();
+        let loc = lsp.get_definition(&uri, line, character);
+        drop(lsp);
+
+        match loc {
+            Some(loc) => Ok(Some(GotoDefinitionResponse::Scalar(lsp_types::Location {
+                uri: Url::parse(&loc.uri).unwrap(),
+                range: lsp_types::Range {
+                    start: lsp_types::Position { line: loc.range.start.line, character: loc.range.start.character },
+                    end: lsp_types::Position { line: loc.range.end.line, character: loc.range.end.character },
+                },
+            }))),
+            None => Ok(None),
+        }
+    }
+
+    async fn formatting(&self, params: DocumentFormattingParams) -> LspResult<Option<Vec<lsp_types::TextEdit>>> {
+        let uri = params.text_document.uri.to_string();
+        let lsp = self.lsp.lock().unwrap();
+        let edits = lsp.format_document(&uri);
+        drop(lsp);
+
+        let result: Vec<lsp_types::TextEdit> = edits.into_iter().map(|e| lsp_types::TextEdit {
+            range: lsp_types::Range {
+                start: lsp_types::Position { line: e.range.start.line, character: e.range.start.character },
+                end: lsp_types::Position { line: e.range.end.line, character: e.range.end.character },
+            },
+            new_text: e.new_text,
+        }).collect();
+
+        Ok(Some(result))
     }
 }
 
 impl Backend {
+    fn byte_to_position(&self, content: &str, byte_offset: usize) -> lsp_types::Position {
+        let safe_offset = byte_offset.min(content.len());
+        let preceding = &content[..safe_offset];
+        let line = preceding.chars().filter(|c| *c == '\n').count() as u32;
+        let last_newline = preceding.rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let col_chars = content[last_newline..safe_offset].chars().count() as u32;
+        lsp_types::Position { line, character: col_chars }
+    }
+
     fn run_diagnostics(&self, content: &str) -> Vec<Diagnostic> {
         let mut diagnostics = Vec::new();
         
@@ -948,10 +1181,15 @@ impl Backend {
                         let mut type_checker = once_ty::TypeChecker::new();
                         if let Err(errors) = type_checker.check(&hir) {
                             for err in errors {
+                                let pos = if let Some(span) = err.span() {
+                                    self.byte_to_position(content, span.start)
+                                } else {
+                                    lsp_types::Position { line: 0, character: 0 }
+                                };
                                 diagnostics.push(Diagnostic {
                                     range: lsp_types::Range {
-                                        start: lsp_types::Position { line: 0, character: 0 },
-                                        end: lsp_types::Position { line: 0, character: 1 },
+                                        start: pos,
+                                        end: lsp_types::Position { line: pos.line, character: pos.character + 1 },
                                     },
                                     severity: Some(DiagnosticSeverity::ERROR),
                                     message: format!("Type error: {}", err.diagnostic()),
@@ -964,10 +1202,15 @@ impl Backend {
                         let mut effect_checker = once_ty::effects::EffectChecker::new();
                         if let Err(errors) = effect_checker.check(&hir) {
                             for err in errors {
+                                let pos = if let Some(span) = err.span() {
+                                    self.byte_to_position(content, span.start)
+                                } else {
+                                    lsp_types::Position { line: 0, character: 0 }
+                                };
                                 diagnostics.push(Diagnostic {
                                     range: lsp_types::Range {
-                                        start: lsp_types::Position { line: 0, character: 0 },
-                                        end: lsp_types::Position { line: 0, character: 1 },
+                                        start: pos,
+                                        end: lsp_types::Position { line: pos.line, character: pos.character + 1 },
                                     },
                                     severity: Some(DiagnosticSeverity::WARNING),
                                     message: format!("Effect warning: {}", err.diagnostic()),
@@ -980,10 +1223,15 @@ impl Backend {
                         let mut linearity_checker = once_linear::LinearityChecker::new();
                         if let Err(errors) = linearity_checker.check(&hir) {
                             for err in errors {
+                                let pos = if let Some(span) = err.span() {
+                                    self.byte_to_position(content, span.start)
+                                } else {
+                                    lsp_types::Position { line: 0, character: 0 }
+                                };
                                 diagnostics.push(Diagnostic {
                                     range: lsp_types::Range {
-                                        start: lsp_types::Position { line: 0, character: 0 },
-                                        end: lsp_types::Position { line: 0, character: 1 },
+                                        start: pos,
+                                        end: lsp_types::Position { line: pos.line, character: pos.character + 1 },
                                     },
                                     severity: Some(DiagnosticSeverity::WARNING),
                                     message: format!("Linearity error: {}", err.diagnostic()),
@@ -1047,6 +1295,27 @@ pub async fn start_lsp_server() -> Result<(), Box<dyn std::error::Error + Send +
         .serve(service)
         .await;
     Ok(())
+}
+
+/// Start the LSP server using tower-lsp over TCP
+pub async fn start_lsp_server_tcp(port: u16) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use tokio::net::TcpListener;
+
+    let listener = TcpListener::bind(format!("127.0.0.1:{}", port)).await?;
+    eprintln!("Once LSP server listening on port {}", port);
+
+    loop {
+        let (stream, addr) = listener.accept().await?;
+        eprintln!("Client connected: {}", addr);
+
+        let (read, write) = tokio::io::split(stream);
+        let (service, socket) = LspService::new(|client| Backend {
+            client,
+            lsp: Mutex::new(OnceLsp::new()),
+        });
+
+        tokio::spawn(Server::new(read, write, socket).serve(service));
+    }
 }
 
 #[cfg(test)]

@@ -89,12 +89,14 @@ fn test_using_block_emits_drop() {
                             init: HirExpr::Call {
                                 function: "open_file".to_string(),
                                 args: vec![],
+                                span: None,
                             },
                             body: HirBlock {
                                 statements: vec![
                                     HirStmt::Expr(HirExpr::Call {
                                         function: "read".to_string(),
-                                        args: vec![HirExpr::Ident("f".to_string())],
+                                        args: vec![HirExpr::Ident("f".to_string(), None)],
+                                        span: None,
                                     }),
                                 ],
                                 span: None,
@@ -183,7 +185,7 @@ fn test_nested_blocks_create_subregions() {
                                 HirStmt::Return(HirReturnStmt { value: None, span: None }),
                             ],
                             span: None,
-                        })),
+                        }, None)),
                     ],
                     span: None,
                 },

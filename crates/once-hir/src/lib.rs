@@ -11,6 +11,21 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use thiserror::Error;
 
+/// Source span that preserves full location information
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct HirSpan {
+    pub start: usize,
+    pub end: usize,
+    pub line: usize,
+    pub column: usize,
+}
+
+impl From<once_parse::Span> for HirSpan {
+    fn from(s: once_parse::Span) -> Self {
+        HirSpan { start: s.start, end: s.end, line: s.line, column: s.column }
+    }
+}
+
 /// A resolved Once program
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HirProgram {
@@ -47,7 +62,7 @@ pub struct HirFnDecl {
     pub effects: Option<HirEffectRow>,
     pub body: HirBlock,
     pub is_public: bool,
-    pub span: Option<(usize, usize)>,
+    pub span: Option<HirSpan>,
 }
 
 /// Effect row for HIR
@@ -69,7 +84,7 @@ pub struct HirParam {
 pub struct HirGenericParam {
     pub name: String,
     pub bounds: Vec<HirType>,
-    pub span: Option<(usize, usize)>,
+    pub span: Option<HirSpan>,
 }
 
 /// Resolved let declaration
@@ -79,7 +94,7 @@ pub struct HirLetDecl {
     pub type_annotation: Option<HirType>,
     pub value: HirExpr,
     pub is_public: bool,
-    pub span: Option<(usize, usize)>,
+    pub span: Option<HirSpan>,
 }
 
 /// Resolved type/enum declaration
@@ -88,7 +103,7 @@ pub struct HirTypeDecl {
     pub name: String,
     pub type_params: Vec<HirGenericParam>,
     pub variants: Vec<HirVariant>,
-    pub span: Option<(usize, usize)>,
+    pub span: Option<HirSpan>,
 }
 
 /// Resolved variant in a type declaration
@@ -103,7 +118,7 @@ pub struct HirVariant {
 pub struct HirStructDecl {
     pub name: String,
     pub fields: Vec<HirStructField>,
-    pub span: Option<(usize, usize)>,
+    pub span: Option<HirSpan>,
 }
 
 /// Resolved struct field
@@ -119,7 +134,7 @@ pub struct HirTraitDecl {
     pub name: String,
     pub type_params: Vec<HirGenericParam>,
     pub methods: Vec<HirFnDecl>,
-    pub span: Option<(usize, usize)>,
+    pub span: Option<HirSpan>,
 }
 
 /// Resolved implementation block
@@ -128,7 +143,7 @@ pub struct HirImplBlock {
     pub trait_name: Option<String>,
     pub target_type: HirType,
     pub methods: Vec<HirFnDecl>,
-    pub span: Option<(usize, usize)>,
+    pub span: Option<HirSpan>,
 }
 
 /// Resolved types in Once
@@ -154,7 +169,7 @@ pub enum HirType {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HirBlock {
     pub statements: Vec<HirStmt>,
-    pub span: Option<(usize, usize)>,
+    pub span: Option<HirSpan>,
 }
 
 /// Resolved statements
@@ -166,9 +181,9 @@ pub enum HirStmt {
     /// Using statement for linear resource management
     Using(HirUsingStmt),
     /// Continue to next loop iteration
-    Continue,
+    Continue(Option<HirSpan>),
     /// Break out of current loop
-    Break,
+    Break(Option<HirSpan>),
 }
 
 /// Resolved let statement
@@ -178,7 +193,7 @@ pub struct HirLetStmt {
     pub type_annotation: Option<HirType>,
     pub value: HirExpr,
     pub is_linear: bool,
-    pub span: Option<(usize, usize)>,
+    pub span: Option<HirSpan>,
 }
 
 /// Resolved using statement
@@ -188,60 +203,75 @@ pub struct HirUsingStmt {
     pub init: HirExpr,
     pub body: HirBlock,
     pub is_linear: bool,
-    pub span: Option<(usize, usize)>,
+    pub span: Option<HirSpan>,
 }
 
 /// Resolved return statement
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HirReturnStmt {
     pub value: Option<HirExpr>,
-    pub span: Option<(usize, usize)>,
+    pub span: Option<HirSpan>,
 }
 
 /// Resolved expressions
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum HirExpr {
-    Literal(HirLiteral),
-    Ident(String),
-    Call { function: String, args: Vec<HirExpr> },
-    Binary { left: Box<HirExpr>, op: HirBinaryOp, right: Box<HirExpr> },
-    Block(HirBlock),
+    Literal(HirLiteral, Option<HirSpan>),
+    Ident(String, Option<HirSpan>),
+    Call { function: String, args: Vec<HirExpr>, span: Option<HirSpan> },
+    Binary { left: Box<HirExpr>, op: HirBinaryOp, right: Box<HirExpr>, span: Option<HirSpan> },
+    Block(HirBlock, Option<HirSpan>),
     If {
         condition: Box<HirExpr>,
         then_branch: HirBlock,
         else_branch: Option<Box<HirExpr>>,
+        span: Option<HirSpan>,
     },
     Match {
         expr: Box<HirExpr>,
-        arms: Vec<(HirPattern, HirExpr)>,
+        arms: Vec<HirMatchArm>,
+        span: Option<HirSpan>,
     },
     For {
         item: String,
         collection: Box<HirExpr>,
         body: HirBlock,
+        span: Option<HirSpan>,
     },
     /// Array indexing
     Index {
         base: Box<HirExpr>,
         index: Box<HirExpr>,
+        span: Option<HirSpan>,
     },
     /// Try/unwrap operator
-    Try(Box<HirExpr>),
+    Try(Box<HirExpr>, Option<HirSpan>),
     /// While loop
     While {
         condition: Box<HirExpr>,
         body: HirBlock,
+        span: Option<HirSpan>,
     },
     /// Struct literal: StructName { field: value, ... }
     Struct {
         name: String,
         fields: Vec<(String, HirExpr)>,
+        span: Option<HirSpan>,
     },
     /// Field access: expr.field
     FieldAccess {
         base: Box<HirExpr>,
         field: String,
+        span: Option<HirSpan>,
     },
+}
+
+/// A single arm in a HIR match expression
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HirMatchArm {
+    pub pattern: HirPattern,
+    pub guard: Option<HirExpr>,
+    pub body: HirExpr,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -249,6 +279,11 @@ pub enum HirPattern {
     Literal(HirLiteral),
     Ident(String),
     Wildcard,
+    /// Enum variant pattern like `Some(x)` or `Ok(val)`
+    EnumVariant {
+        name: String,
+        fields: Vec<HirPattern>,
+    },
 }
 
 /// Resolved binary operators
@@ -433,7 +468,7 @@ impl HirBuilder {
         HirGenericParam {
             name: param.name,
             bounds: param.bounds.into_iter().map(|t| self.resolve_type(t)).collect(),
-            span: param.span.map(|s| (s.start, s.end)),
+            span: param.span.map(|s| HirSpan::from(s)),
         }
     }
 
@@ -472,8 +507,8 @@ impl HirBuilder {
             return_type: fn_decl.return_type.map(|t| self.resolve_type(t)),
             effects,
             body,
-            is_public: false, // Will be determined by visibility analysis
-            span: fn_decl.span.map(|s| (s.start, s.end)),
+            is_public: fn_decl.is_public,
+            span: fn_decl.span.map(|s| HirSpan::from(s)),
         }
     }
 
@@ -507,8 +542,8 @@ impl HirBuilder {
             return_type: goal_decl.return_type.map(|t| self.resolve_type(t)),
             effects,
             body,
-            is_public: false,
-            span: goal_decl.span.map(|s| (s.start, s.end)),
+            is_public: goal_decl.is_public,
+            span: goal_decl.span.map(|s| HirSpan::from(s)),
         }
     }
 
@@ -518,7 +553,7 @@ impl HirBuilder {
             type_annotation: let_decl.type_annotation.map(|t| self.resolve_type(t)),
             value: self.resolve_expr(let_decl.value),
             is_public: false, // Will be determined by visibility analysis
-            span: let_decl.span.map(|s| (s.start, s.end)),
+            span: let_decl.span.map(|s| HirSpan::from(s)),
         }
     }
 
@@ -532,7 +567,7 @@ impl HirBuilder {
                 name: v.name,
                 fields: v.fields.into_iter().map(|t| self.resolve_type(t)).collect(),
             }).collect(),
-            span: type_decl.span.map(|s| (s.start, s.end)),
+            span: type_decl.span.map(|s| HirSpan::from(s)),
         }
     }
 
@@ -543,7 +578,7 @@ impl HirBuilder {
                 name: f.name,
                 field_type: self.resolve_type(f.field_type),
             }).collect(),
-            span: struct_decl.span.map(|s| (s.start, s.end)),
+            span: struct_decl.span.map(|s| HirSpan::from(s)),
         }
     }
 
@@ -554,7 +589,7 @@ impl HirBuilder {
                 .map(|p| self.resolve_generic_param(p))
                 .collect(),
             methods: trait_decl.methods.into_iter().map(|m| self.resolve_fn_decl(m)).collect(),
-            span: trait_decl.span.map(|s| (s.start, s.end)),
+            span: trait_decl.span.map(|s| HirSpan::from(s)),
         }
     }
 
@@ -563,12 +598,12 @@ impl HirBuilder {
             trait_name: impl_block.trait_name,
             target_type: self.resolve_type(impl_block.target_type),
             methods: impl_block.methods.into_iter().map(|m| self.resolve_fn_decl(m)).collect(),
-            span: impl_block.span.map(|s| (s.start, s.end)),
+            span: impl_block.span.map(|s| HirSpan::from(s)),
         }
     }
 
     fn resolve_block(&mut self, block: Block) -> HirBlock {
-        let span = block.span.map(|s| (s.start, s.end));
+        let span = block.span.map(|s| HirSpan::from(s));
         HirBlock {
             statements: block.statements.into_iter()
                 .map(|stmt| self.resolve_stmt(stmt))
@@ -588,12 +623,12 @@ fn resolve_stmt(&mut self, stmt: Stmt) -> HirStmt {
                     value: self.resolve_expr(let_stmt.value),
                     is_linear,
                     span: let_stmt.span
-                        .map(|s| (s.start, s.end)),
+                        .map(|s| HirSpan::from(s)),
                 })
             },
             Stmt::Return(return_stmt) => HirStmt::Return(HirReturnStmt {
                 value: return_stmt.value.map(|e| self.resolve_expr(e)),
-                span: return_stmt.span.map(|s| (s.start, s.end)),
+                span: return_stmt.span.map(|s| HirSpan::from(s)),
             }),
             Stmt::Expr(expr) => HirStmt::Expr(self.resolve_expr(expr)),
             Stmt::Using(using_stmt) => HirStmt::Using(HirUsingStmt {
@@ -601,58 +636,110 @@ fn resolve_stmt(&mut self, stmt: Stmt) -> HirStmt {
                 init: self.resolve_expr(using_stmt.init),
                 body: self.resolve_block(using_stmt.body),
                 is_linear: true, // Using statements always involve linear resources
-                span: using_stmt.span.map(|s| (s.start, s.end)),
+                span: using_stmt.span.map(|s| HirSpan::from(s)),
             }),
-            Stmt::Continue => HirStmt::Continue,
-            Stmt::Break => HirStmt::Break,
+            Stmt::Continue => HirStmt::Continue(None),
+            Stmt::Break => HirStmt::Break(None),
         }
     }
 
     fn resolve_expr(&mut self, expr: Expr) -> HirExpr {
         match expr {
-            Expr::Literal(lit) => HirExpr::Literal(self.resolve_literal(lit)),
-            Expr::Ident(name) => HirExpr::Ident(name),
-            Expr::Call { function, args } => HirExpr::Call {
-                function,
-                args: args.into_iter().map(|e| self.resolve_expr(e)).collect(),
-            },
-            Expr::Binary { left, op, right } => HirExpr::Binary {
-                left: Box::new(self.resolve_expr(*left)),
-                op: self.resolve_binary_op(op),
-                right: Box::new(self.resolve_expr(*right)),
-            },
-            Expr::Block(block) => HirExpr::Block(self.resolve_block(block)),
-            Expr::If { condition, then_branch, else_branch } => HirExpr::If {
-                condition: Box::new(self.resolve_expr(*condition)),
-                then_branch: self.resolve_block(then_branch),
-                else_branch: else_branch.map(|b| Box::new(self.resolve_expr(*b))),
-            },
-            Expr::Match { expr, arms } => HirExpr::Match {
-                expr: Box::new(self.resolve_expr(*expr)),
-                arms: arms.into_iter().map(|(p, e)| (self.resolve_pattern(p), self.resolve_expr(e))).collect(),
-            },
-            Expr::For { item, collection, body } => HirExpr::For {
-                item,
-                collection: Box::new(self.resolve_expr(*collection)),
-                body: self.resolve_block(body),
-            },
-            Expr::While { condition, body } => HirExpr::While {
-                condition: Box::new(self.resolve_expr(*condition)),
-                body: self.resolve_block(body),
-            },
-            Expr::Index { base, index } => HirExpr::Index {
-                base: Box::new(self.resolve_expr(*base)),
-                index: Box::new(self.resolve_expr(*index)),
-            },
-            Expr::Try(inner) => HirExpr::Try(Box::new(self.resolve_expr(*inner))),
-            Expr::Struct { name, fields } => HirExpr::Struct {
-                name,
-                fields: fields.into_iter().map(|(n, e)| (n, self.resolve_expr(e))).collect(),
-            },
-            Expr::FieldAccess { base, field } => HirExpr::FieldAccess {
-                base: Box::new(self.resolve_expr(*base)),
-                field,
-            },
+            Expr::Literal(lit, span) => {
+                let hir_span = span.map(|s| HirSpan::from(s));
+                HirExpr::Literal(self.resolve_literal(lit), hir_span)
+            }
+            Expr::Ident(name, span) => {
+                let hir_span = span.map(|s| HirSpan::from(s));
+                HirExpr::Ident(name, hir_span)
+            }
+            Expr::Call { function, args, span } => {
+                let hir_span = span.map(|s| HirSpan::from(s));
+                HirExpr::Call {
+                    function,
+                    args: args.into_iter().map(|e| self.resolve_expr(e)).collect(),
+                    span: hir_span,
+                }
+            }
+            Expr::Binary { left, op, right, span } => {
+                let hir_span = span.map(|s| HirSpan::from(s));
+                HirExpr::Binary {
+                    left: Box::new(self.resolve_expr(*left)),
+                    op: self.resolve_binary_op(op),
+                    right: Box::new(self.resolve_expr(*right)),
+                    span: hir_span,
+                }
+            }
+            Expr::Block(block, span) => {
+                let hir_span = span.map(|s| HirSpan::from(s));
+                HirExpr::Block(self.resolve_block(block), hir_span)
+            }
+            Expr::If { condition, then_branch, else_branch, span } => {
+                let hir_span = span.map(|s| HirSpan::from(s));
+                HirExpr::If {
+                    condition: Box::new(self.resolve_expr(*condition)),
+                    then_branch: self.resolve_block(then_branch),
+                    else_branch: else_branch.map(|b| Box::new(self.resolve_expr(*b))),
+                    span: hir_span,
+                }
+            }
+            Expr::Match { expr, arms, span } => {
+                let hir_span = span.map(|s| HirSpan::from(s));
+                HirExpr::Match {
+                    expr: Box::new(self.resolve_expr(*expr)),
+                    arms: arms.into_iter().map(|arm| HirMatchArm {
+                        pattern: self.resolve_pattern(arm.pattern),
+                        guard: arm.guard.map(|g| self.resolve_expr(g)),
+                        body: self.resolve_expr(arm.body),
+                    }).collect(),
+                    span: hir_span,
+                }
+            }
+            Expr::For { item, collection, body, span } => {
+                let hir_span = span.map(|s| HirSpan::from(s));
+                HirExpr::For {
+                    item,
+                    collection: Box::new(self.resolve_expr(*collection)),
+                    body: self.resolve_block(body),
+                    span: hir_span,
+                }
+            }
+            Expr::While { condition, body, span } => {
+                let hir_span = span.map(|s| HirSpan::from(s));
+                HirExpr::While {
+                    condition: Box::new(self.resolve_expr(*condition)),
+                    body: self.resolve_block(body),
+                    span: hir_span,
+                }
+            }
+            Expr::Index { base, index, span } => {
+                let hir_span = span.map(|s| HirSpan::from(s));
+                HirExpr::Index {
+                    base: Box::new(self.resolve_expr(*base)),
+                    index: Box::new(self.resolve_expr(*index)),
+                    span: hir_span,
+                }
+            }
+            Expr::Try(inner, span) => {
+                let hir_span = span.map(|s| HirSpan::from(s));
+                HirExpr::Try(Box::new(self.resolve_expr(*inner)), hir_span)
+            }
+            Expr::Struct { name, fields, span } => {
+                let hir_span = span.map(|s| HirSpan::from(s));
+                HirExpr::Struct {
+                    name,
+                    fields: fields.into_iter().map(|(n, e)| (n, self.resolve_expr(e))).collect(),
+                    span: hir_span,
+                }
+            }
+            Expr::FieldAccess { base, field, span } => {
+                let hir_span = span.map(|s| HirSpan::from(s));
+                HirExpr::FieldAccess {
+                    base: Box::new(self.resolve_expr(*base)),
+                    field,
+                    span: hir_span,
+                }
+            }
         }
     }
 
@@ -661,6 +748,10 @@ fn resolve_stmt(&mut self, stmt: Stmt) -> HirStmt {
             once_parse::Pattern::Literal(lit) => HirPattern::Literal(self.resolve_literal(lit)),
             once_parse::Pattern::Ident(name) => HirPattern::Ident(name),
             once_parse::Pattern::Wildcard => HirPattern::Wildcard,
+            once_parse::Pattern::EnumVariant { name, fields } => HirPattern::EnumVariant {
+                name,
+                fields: fields.into_iter().map(|f| self.resolve_pattern(f)).collect(),
+            },
         }
     }
 

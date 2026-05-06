@@ -11,9 +11,12 @@ use once_hir::*;
 use once_ty::{Type, TypeVar};
 use once_rinf::{Region, RegionDag};
 use once_lex::Span;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt;
 use thiserror::Error;
+
+pub mod verify;
+pub use verify::MirVerifier;
 
 /// MIR generation errors
 #[derive(Error, Debug, Clone)]
@@ -76,6 +79,22 @@ pub enum MirOp {
         task: MirLocation, 
         result: MirLocation 
     },
+    /// Create a new task group for structured concurrency
+    CreateGroup {
+        result: MirLocation
+    },
+    /// Spawn a task within a group
+    SpawnInGroup {
+        group: MirLocation,
+        function: String,
+        args: Vec<MirLocation>,
+        result: MirLocation
+    },
+    /// Await all tasks in a group (blocks until all children complete)
+    AwaitGroup {
+        group: MirLocation,
+        result: MirLocation
+    },
     /// Function call
     Call { 
         function: String, 
@@ -98,6 +117,8 @@ pub enum MirOp {
     Label { id: usize },
     /// Try block: instruments error context capture
     TryBlock { result: MirLocation },
+    /// Load the length of a collection (array/vec) into dest
+    LoadLength { base: MirLocation, dest: MirLocation },
 }
 
 /// MIR binary operation types
@@ -211,6 +232,8 @@ pub struct MirGenerator {
     next_label: usize,
     region_dag: Option<RegionDag>,
     errors: Vec<MirError>,
+    /// Maps variant names to their discriminant index across all enum types
+    variant_discriminants: HashMap<String, usize>,
 }
 
 impl MirGenerator {
@@ -221,6 +244,7 @@ impl MirGenerator {
             next_label: 0,
             region_dag: None,
             errors: Vec::new(),
+            variant_discriminants: HashMap::new(),
         }
     }
 
@@ -235,6 +259,16 @@ impl MirGenerator {
         self.next_local = 0;
         self.next_temp = 0;
         self.errors.clear();
+        self.variant_discriminants.clear();
+
+        // Build variant discriminant index from type declarations
+        for item in &hir.items {
+            if let HirItem::TypeDecl(type_decl) = item {
+                for (discriminant, variant) in type_decl.variants.iter().enumerate() {
+                    self.variant_discriminants.insert(variant.name.clone(), discriminant);
+                }
+            }
+        }
 
         let mut functions = Vec::new();
         let global_region = Region {
@@ -323,6 +357,16 @@ impl MirGenerator {
         })
     }
 
+    fn literal_to_mir_value(&self, lit: &HirLiteral) -> MirValue {
+        match lit {
+            HirLiteral::Int(i) => MirValue::Int(*i),
+            HirLiteral::Float(f) => MirValue::Float(*f),
+            HirLiteral::String(s) => MirValue::String(s.clone()),
+            HirLiteral::Bool(b) => MirValue::Bool(*b),
+            HirLiteral::Unit => MirValue::Unit,
+        }
+    }
+
     fn generate_block(
         &mut self,
         block: &HirBlock,
@@ -402,7 +446,7 @@ impl MirGenerator {
                 let expr_ops = self.generate_expr(expr, temp_count)?;
                 statements.extend(expr_ops);
             }
-            HirStmt::Continue | HirStmt::Break => {
+            HirStmt::Continue(_) | HirStmt::Break(_) => {
                 // Control flow — no MIR statements generated here
             }
             HirStmt::Using(using_stmt) => {
@@ -454,7 +498,7 @@ impl MirGenerator {
         let mut statements = Vec::new();
 
         match expr {
-            HirExpr::Literal(lit) => {
+            HirExpr::Literal(lit, _) => {
                 // Create temporary for literal
                 let temp_id = *temp_count;
                 *temp_count += 1;
@@ -514,7 +558,7 @@ impl MirGenerator {
                     }
                 }
             }
-            HirExpr::Ident(name) => {
+            HirExpr::Ident(name, _) => {
                 // Look up variable location (simplified - in real implementation would use symbol table)
                 let temp_id = *temp_count;
                 *temp_count += 1;
@@ -532,7 +576,7 @@ impl MirGenerator {
                     region: None,
                 });
             }
-            HirExpr::Call { function, args } => {
+            HirExpr::Call { function, args, .. } => {
                 // Generate operations for arguments
                 let mut arg_locations = Vec::new();
                 for arg in args {
@@ -569,7 +613,7 @@ impl MirGenerator {
                     region: None,
                 });
             }
-            HirExpr::Binary { left, op, right } => {
+            HirExpr::Binary { left, op, right, .. } => {
                 // Generate operations for left and right operands
                 let left_ops = self.generate_expr(left, temp_count)?;
                 statements.extend(left_ops);
@@ -595,11 +639,11 @@ impl MirGenerator {
                     region: None,
                 });
             }
-            HirExpr::Block(block) => {
+            HirExpr::Block(block, _) => {
                 let _block_ops = self.generate_block(block, &mut statements, &mut 0, temp_count)?;
                 // statements already extended by generate_block
             }
-            HirExpr::If { condition, then_branch, else_branch } => {
+            HirExpr::If { condition, then_branch, else_branch, .. } => {
                 // Generate condition
                 let cond_ops = self.generate_expr(condition, temp_count)?;
                 statements.extend(cond_ops);
@@ -689,8 +733,7 @@ impl MirGenerator {
                     region: None,
                 });
             }
-            HirExpr::Match { expr, arms } => {
-                // Generate scrutinee
+            HirExpr::Match { expr, arms, .. } => {
                 let scrutinee_ops = self.generate_expr(expr, temp_count)?;
                 statements.extend(scrutinee_ops);
                 let scrutinee_temp = MirLocation::Temp(*temp_count - 1);
@@ -699,29 +742,145 @@ impl MirGenerator {
                 let result_temp = MirLocation::Temp(*temp_count);
                 *temp_count += 1;
 
-                for (_pattern, arm_expr) in arms {
+                for arm in arms {
                     let arm_label = self.fresh_label();
                     let next_label = self.fresh_label();
 
-                    // Pattern comparison: currently uses scrutinee value directly
-                    // Full pattern matching (enum variants, bindings, guards) is future work
-                    statements.push(MirStmt {
-                        op: MirOp::Branch {
-                            condition: scrutinee_temp.clone(),
-                            true_target: arm_label,
-                            false_target: next_label,
-                        },
-                        span: Span::new(0, 0, 0, 0),
-                        region: None,
-                    });
+                    match &arm.pattern {
+                        HirPattern::Literal(lit) => {
+                            // Load literal and compare with scrutinee
+                            let lit_temp = MirLocation::Temp(*temp_count);
+                            *temp_count += 1;
+                            statements.push(MirStmt {
+                                op: MirOp::LoadLiteral {
+                                    value: self.literal_to_mir_value(lit),
+                                    dest: lit_temp.clone(),
+                                },
+                                span: Span::new(0, 0, 0, 0),
+                                region: None,
+                            });
+                            let cmp_temp = MirLocation::Temp(*temp_count);
+                            *temp_count += 1;
+                            statements.push(MirStmt {
+                                op: MirOp::BinOp {
+                                    op: MirBinOp::Eq,
+                                    left: scrutinee_temp.clone(),
+                                    right: lit_temp,
+                                    dest: cmp_temp.clone(),
+                                },
+                                span: Span::new(0, 0, 0, 0),
+                                region: None,
+                            });
+                            statements.push(MirStmt {
+                                op: MirOp::Branch {
+                                    condition: cmp_temp,
+                                    true_target: arm_label,
+                                    false_target: next_label,
+                                },
+                                span: Span::new(0, 0, 0, 0),
+                                region: None,
+                            });
+                        }
+                        HirPattern::Ident(_name) => {
+                            // Bind scrutinee value to a local slot, then always match
+                            let bind_temp = MirLocation::Temp(*temp_count);
+                            *temp_count += 1;
+                            statements.push(MirStmt {
+                                op: MirOp::Move {
+                                    from: scrutinee_temp.clone(),
+                                    to: bind_temp,
+                                },
+                                span: Span::new(0, 0, 0, 0),
+                                region: None,
+                            });
+                            statements.push(MirStmt {
+                                op: MirOp::Jump { target: arm_label },
+                                span: Span::new(0, 0, 0, 0),
+                                region: None,
+                            });
+                        }
+                        HirPattern::Wildcard => {
+                            // Wildcard always matches
+                            statements.push(MirStmt {
+                                op: MirOp::Jump { target: arm_label },
+                                span: Span::new(0, 0, 0, 0),
+                                region: None,
+                            });
+                        }
+                        HirPattern::EnumVariant { name, fields } => {
+                            let discriminant = self.variant_discriminants.get(name).copied().unwrap_or(0);
+                            let variant_tag_temp = MirLocation::Temp(*temp_count);
+                            *temp_count += 1;
+                            statements.push(MirStmt {
+                                op: MirOp::LoadLiteral {
+                                    value: MirValue::Int(discriminant as i64),
+                                    dest: variant_tag_temp.clone(),
+                                },
+                                span: Span::new(0, 0, 0, 0),
+                                region: None,
+                            });
+                            let cmp_temp = MirLocation::Temp(*temp_count);
+                            *temp_count += 1;
+                            statements.push(MirStmt {
+                                op: MirOp::BinOp {
+                                    op: MirBinOp::Eq,
+                                    left: scrutinee_temp.clone(),
+                                    right: variant_tag_temp,
+                                    dest: cmp_temp.clone(),
+                                },
+                                span: Span::new(0, 0, 0, 0),
+                                region: None,
+                            });
+                            statements.push(MirStmt {
+                                op: MirOp::Branch {
+                                    condition: cmp_temp,
+                                    true_target: arm_label,
+                                    false_target: next_label,
+                                },
+                                span: Span::new(0, 0, 0, 0),
+                                region: None,
+                            });
+                            let _ = fields;
+                            let _ = name;
+                        }
+                    }
 
-                    // Arm body
+                    // Arm pattern match body
                     statements.push(MirStmt {
                         op: MirOp::Label { id: arm_label },
                         span: Span::new(0, 0, 0, 0),
                         region: None,
                     });
-                    let arm_ops = self.generate_expr(arm_expr, temp_count)?;
+
+                    // Check guard if present
+                    let guard_label = if arm.guard.is_some() {
+                        let guard_ok = self.fresh_label();
+                        let guard_ops = self.generate_expr(arm.guard.as_ref().unwrap(), temp_count)?;
+                        statements.extend(guard_ops);
+                        let guard_temp = MirLocation::Temp(*temp_count - 1);
+                        statements.push(MirStmt {
+                            op: MirOp::Branch {
+                                condition: guard_temp,
+                                true_target: guard_ok,
+                                false_target: next_label,
+                            },
+                            span: Span::new(0, 0, 0, 0),
+                            region: None,
+                        });
+                        Some(guard_ok)
+                    } else {
+                        None
+                    };
+
+                    // Arm commit (after guard passes)
+                    if let Some(gk) = guard_label {
+                        statements.push(MirStmt {
+                            op: MirOp::Label { id: gk },
+                            span: Span::new(0, 0, 0, 0),
+                            region: None,
+                        });
+                    }
+                    let arm_ops = self.generate_expr(&arm.body, temp_count)?;
                     statements.extend(arm_ops);
                     statements.push(MirStmt {
                         op: MirOp::Move {
@@ -737,7 +896,7 @@ impl MirGenerator {
                         region: None,
                     });
 
-                    // Next arm
+                    // Next arm label
                     statements.push(MirStmt {
                         op: MirOp::Label { id: next_label },
                         span: Span::new(0, 0, 0, 0),
@@ -752,38 +911,70 @@ impl MirGenerator {
                     region: None,
                 });
             }
-            HirExpr::For { item, collection, body } => {
+            HirExpr::For { item, collection, body, .. } => {
                 // Generate collection
                 let coll_ops = self.generate_expr(collection, temp_count)?;
                 statements.extend(coll_ops);
-                let _coll_temp = MirLocation::Temp(*temp_count - 1);
 
-                // Loop labels
                 let loop_start = self.fresh_label();
                 let loop_body = self.fresh_label();
                 let loop_end = self.fresh_label();
-
-                // Result temp (Unit by default for loops)
                 let result_temp = MirLocation::Temp(*temp_count);
                 *temp_count += 1;
 
-                // Jump to start
+                // Counter-based iteration: for collections, iterate idx 0..length
+                let idx_temp = MirLocation::Temp(*temp_count);
+                *temp_count += 1;
+                let len_temp = MirLocation::Temp(*temp_count);
+                *temp_count += 1;
+                let one_temp = MirLocation::Temp(*temp_count);
+                *temp_count += 1;
+                let coll_temp = MirLocation::Temp(*temp_count - 5);
+
+                // idx = 0
                 statements.push(MirStmt {
-                    op: MirOp::Jump { target: loop_start },
+                    op: MirOp::LoadLiteral { value: MirValue::Int(0), dest: idx_temp.clone() },
+                    span: Span::new(0, 0, 0, 0),
+                    region: None,
+                });
+                // len = LoadLength(collection)
+                statements.push(MirStmt {
+                    op: MirOp::LoadLength { base: coll_temp.clone(), dest: len_temp.clone() },
+                    span: Span::new(0, 0, 0, 0),
+                    region: None,
+                });
+                // one = 1
+                statements.push(MirStmt {
+                    op: MirOp::LoadLiteral { value: MirValue::Int(1), dest: one_temp.clone() },
                     span: Span::new(0, 0, 0, 0),
                     region: None,
                 });
 
-                // Loop start: entry point for each iteration
+                // loop_start:
                 statements.push(MirStmt {
                     op: MirOp::Label { id: loop_start },
                     span: Span::new(0, 0, 0, 0),
                     region: None,
                 });
-                // Branch to body (for loop body always executes; full iterator protocol is future work)
+
+                // cmp = idx < len
+                let cmp_temp = MirLocation::Temp(*temp_count);
+                *temp_count += 1;
+                statements.push(MirStmt {
+                    op: MirOp::BinOp {
+                        op: MirBinOp::Lt,
+                        left: idx_temp.clone(),
+                        right: len_temp.clone(),
+                        dest: cmp_temp.clone(),
+                    },
+                    span: Span::new(0, 0, 0, 0),
+                    region: None,
+                });
+
+                // if !cmp goto loop_end
                 statements.push(MirStmt {
                     op: MirOp::Branch {
-                        condition: MirLocation::Temp(0),
+                        condition: cmp_temp,
                         true_target: loop_body,
                         false_target: loop_end,
                     },
@@ -791,23 +982,59 @@ impl MirGenerator {
                     region: None,
                 });
 
-                // Loop body
+                // loop_body:
                 statements.push(MirStmt {
                     op: MirOp::Label { id: loop_body },
                     span: Span::new(0, 0, 0, 0),
                     region: None,
                 });
-                let _body_ops = self.generate_block(body, &mut statements, &mut 0, temp_count)?;
-                // Register item variable
+
+                // Load element: item = collection[idx_temp]
+                let item_temp = MirLocation::Temp(*temp_count);
+                *temp_count += 1;
+                statements.push(MirStmt {
+                    op: MirOp::Move {
+                        from: MirLocation::Index {
+                            base: Box::new(coll_temp),
+                            index: Box::new(idx_temp.clone()),
+                        },
+                        to: item_temp.clone(),
+                    },
+                    span: Span::new(0, 0, 0, 0),
+                    region: None,
+                });
                 let _ = item;
-                // Jump back to start
+
+                // Execute body
+                let _body_ops = self.generate_block(body, &mut statements, &mut 0, temp_count)?;
+
+                // idx = idx + 1
+                let new_idx = MirLocation::Temp(*temp_count);
+                *temp_count += 1;
+                statements.push(MirStmt {
+                    op: MirOp::BinOp {
+                        op: MirBinOp::Add,
+                        left: idx_temp.clone(),
+                        right: one_temp,
+                        dest: new_idx.clone(),
+                    },
+                    span: Span::new(0, 0, 0, 0),
+                    region: None,
+                });
+                statements.push(MirStmt {
+                    op: MirOp::Move { from: new_idx, to: idx_temp },
+                    span: Span::new(0, 0, 0, 0),
+                    region: None,
+                });
+
+                // goto loop_start
                 statements.push(MirStmt {
                     op: MirOp::Jump { target: loop_start },
                     span: Span::new(0, 0, 0, 0),
                     region: None,
                 });
 
-                // Loop end
+                // loop_end:
                 statements.push(MirStmt {
                     op: MirOp::Label { id: loop_end },
                     span: Span::new(0, 0, 0, 0),
@@ -823,11 +1050,11 @@ impl MirGenerator {
                     region: None,
                 });
             }
-            HirExpr::While { condition, body } => {
+            HirExpr::While { condition, body, .. } => {
                 // Generate condition evaluation
                 let cond_ops = self.generate_expr(condition, temp_count)?;
                 statements.extend(cond_ops);
-                let cond_temp = MirLocation::Temp(*temp_count - 1);
+                let _cond_temp = MirLocation::Temp(*temp_count - 1);
 
                 let loop_start = self.fresh_label();
                 let loop_body = self.fresh_label();
@@ -886,7 +1113,7 @@ impl MirGenerator {
                     region: None,
                 });
             }
-            HirExpr::Index { base, index } => {
+            HirExpr::Index { base, index, .. } => {
                 // Generate operations for base and index
                 let base_ops = self.generate_expr(base, temp_count)?;
                 statements.extend(base_ops);
@@ -921,7 +1148,7 @@ impl MirGenerator {
                     region: None,
                 });
             }
-            HirExpr::Try(inner) => {
+            HirExpr::Try(inner, _) => {
                 // `try expr` lowers to: evaluate expr, if it's Err, return Err immediately;
                 // if it's Ok, unwrap the value and continue.
                 let inner_ops = self.generate_expr(inner, temp_count)?;

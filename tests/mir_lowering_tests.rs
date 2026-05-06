@@ -58,12 +58,13 @@ fn test_mir_if_lowering() {
                     statements: vec![
                         HirStmt::Return(HirReturnStmt {
                             value: Some(HirExpr::If {
-                                condition: Box::new(HirExpr::Literal(HirLiteral::Bool(true))),
+                                condition: Box::new(HirExpr::Literal(HirLiteral::Bool(true), None)),
                                 then_branch: HirBlock {
-                                    statements: vec![HirStmt::Expr(HirExpr::Literal(HirLiteral::Int(1)))],
+                                    statements: vec![HirStmt::Expr(HirExpr::Literal(HirLiteral::Int(1), None))],
                                     span: None,
                                 },
-                                else_branch: Some(Box::new(HirExpr::Literal(HirLiteral::Int(2)))),
+                                else_branch: Some(Box::new(HirExpr::Literal(HirLiteral::Int(2), None))),
+                                span: None,
                             }),
                             span: None,
                         }),
@@ -109,11 +110,12 @@ fn test_mir_match_lowering() {
                     statements: vec![
                         HirStmt::Return(HirReturnStmt {
                             value: Some(HirExpr::Match {
-                                expr: Box::new(HirExpr::Literal(HirLiteral::Int(1))),
+                                expr: Box::new(HirExpr::Literal(HirLiteral::Int(1), None)),
                                 arms: vec![
-                                    (HirPattern::Literal(HirLiteral::Int(1)), HirExpr::Literal(HirLiteral::Int(10))),
-                                    (HirPattern::Wildcard, HirExpr::Literal(HirLiteral::Int(0))),
+                                    (HirPattern::Literal(HirLiteral::Int(1)), HirExpr::Literal(HirLiteral::Int(10), None)),
+                                    (HirPattern::Wildcard, HirExpr::Literal(HirLiteral::Int(0), None)),
                                 ],
+                                span: None,
                             }),
                             span: None,
                         }),
@@ -161,12 +163,14 @@ fn test_mir_using_block_drop() {
                             init: HirExpr::Call {
                                 function: "open_file".to_string(),
                                 args: vec![],
+                                span: None,
                             },
                             body: HirBlock {
                                 statements: vec![
                                     HirStmt::Expr(HirExpr::Call {
                                         function: "read".to_string(),
-                                        args: vec![HirExpr::Ident("f".to_string())],
+                                        args: vec![HirExpr::Ident("f".to_string(), None)],
+                                        span: None,
                                     }),
                                 ],
                                 span: None,

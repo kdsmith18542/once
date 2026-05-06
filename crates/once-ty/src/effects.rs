@@ -190,7 +190,7 @@ impl EffectEnv {
 
 /// Effect checker for Once programs
 pub struct EffectChecker {
-    env: EffectEnv,
+    pub env: EffectEnv,
     errors: Vec<EffectError>,
 }
 
@@ -261,13 +261,27 @@ impl EffectChecker {
 
         // Check function body for effects
         let body_effects = self.check_block(&fn_decl.body, &mut fn_env)?;
-        
+
+        // ONCE-003 §2.3: Exported (public) functions MUST declare effects explicitly.
+        // Private functions may infer their effects.
+        if fn_decl.is_public && fn_decl.effects.is_none() {
+            // Check if the body has any non-trivial effects
+            let has_effects = !matches!(body_effects, EffectRow::Empty);
+            if has_effects {
+                self.errors.push(EffectError::UnhandledEffect {
+                    name: format!("Exported function '{}' must declare effects explicitly. Use '!effects' annotation.", fn_decl.name),
+                    span: fn_decl.span.map(|hs| SourceSpan { start: hs.start, end: hs.end, line: hs.line, column: hs.column }),
+                });
+                return Ok(());
+            }
+        }
+
         // Validate that body effects are allowed by declared effects
         if !self.subsumes_effect_rows(&declared_effects, &body_effects) {
             self.errors.push(EffectError::UnhandledEffect {
                 name: format!("Function '{}' has unhandled effects. Body effects: {}, Declared: {}", 
                     fn_decl.name, body_effects, declared_effects),
-                span: fn_decl.span.map(|(start, end)| SourceSpan { start, end, line: 0, column: 0 }),
+                span: fn_decl.span.map(|hs| SourceSpan { start: hs.start, end: hs.end, line: hs.line, column: hs.column }),
             });
         }
         
@@ -317,7 +331,7 @@ impl EffectChecker {
                 }
             }
             HirStmt::Expr(expr) => self.check_expr(expr),
-            HirStmt::Continue | HirStmt::Break => Ok(EffectRow::Empty),
+            HirStmt::Continue(_) | HirStmt::Break(_) => Ok(EffectRow::Empty),
             HirStmt::Using(using_stmt) => {
                 // Check init expression effects
                 let _init_effects = self.check_expr(&using_stmt.init)?;
@@ -333,15 +347,15 @@ impl EffectChecker {
 
     fn check_expr(&mut self, expr: &HirExpr) -> Result<EffectRow, Vec<EffectError>> {
         match expr {
-            HirExpr::Literal(_) => Ok(EffectRow::Empty),
-            HirExpr::Ident(name) => {
+            HirExpr::Literal(_, _) => Ok(EffectRow::Empty),
+            HirExpr::Ident(name, _) => {
                 if let Some(effects) = self.env.bindings.get(name) {
                     Ok(effects.clone())
                 } else {
                     Ok(EffectRow::Empty)
                 }
             }
-            HirExpr::Call { function, args } => {
+            HirExpr::Call { function, args, .. } => {
                 // Check arguments for effects
                 let mut arg_effects = EffectRow::Empty;
                 for arg in args {
@@ -368,13 +382,13 @@ impl EffectChecker {
                 
                 Ok(self.union_effect_rows(arg_effects, call_effects))
             }
-            HirExpr::Binary { left, op: _, right } => {
+            HirExpr::Binary { left, op: _, right, .. } => {
                 let left_effects = self.check_expr(left)?;
                 let right_effects = self.check_expr(right)?;
                 Ok(self.union_effect_rows(left_effects, right_effects))
             }
-            HirExpr::Block(block) => self.check_block(block, &mut self.env.clone()),
-            HirExpr::If { condition, then_branch, else_branch } => {
+            HirExpr::Block(block, _) => self.check_block(block, &mut self.env.clone()),
+            HirExpr::If { condition, then_branch, else_branch, .. } => {
                 let cond_effects = self.check_expr(condition)?;
                 let then_effects = self.check_block(then_branch, &mut self.env.clone())?;
                 
@@ -387,31 +401,31 @@ impl EffectChecker {
                 
                 Ok(combined)
             }
-            HirExpr::Match { expr, arms } => {
+            HirExpr::Match { expr, arms, .. } => {
                 let mut combined = self.check_expr(expr)?;
                 
-                for (_, arm_expr) in arms {
-                    let arm_effects = self.check_expr(arm_expr)?;
+                for arm in arms {
+                    let arm_effects = self.check_expr(&arm.body)?;
                     combined = self.union_effect_rows(combined, arm_effects);
                 }
                 
                 Ok(combined)
             }
-            HirExpr::For { item: _, collection, body } => {
+            HirExpr::For { item: _, collection, body, .. } => {
                 let coll_effects = self.check_expr(collection)?;
                 let body_effects = self.check_block(body, &mut self.env.clone())?;
                 
                 Ok(self.union_effect_rows(coll_effects, body_effects))
             }
-            HirExpr::Index { base, index } => {
+            HirExpr::Index { base, index, .. } => {
                 let base_effects = self.check_expr(base)?;
                 let index_effects = self.check_expr(index)?;
                 Ok(self.union_effect_rows(base_effects, index_effects))
             }
-            HirExpr::Try(inner) => {
+            HirExpr::Try(inner, _) => {
                 self.check_expr(inner)
             }
-            HirExpr::Struct { name: _, fields } => {
+            HirExpr::Struct { name: _, fields, .. } => {
                 let mut effects = EffectRow::Empty;
                 for (_, val) in fields {
                     let val_effects = self.check_expr(val)?;
@@ -419,10 +433,10 @@ impl EffectChecker {
                 }
                 Ok(effects)
             }
-            HirExpr::FieldAccess { base, field: _ } => {
+            HirExpr::FieldAccess { base, field: _, .. } => {
                 self.check_expr(base)
             }
-            HirExpr::While { condition, body } => {
+            HirExpr::While { condition, body, .. } => {
                 let cond_effects = self.check_expr(condition)?;
                 let body_effects = self.check_block(body, &mut self.env.clone())?;
                 Ok(self.union_effect_rows(cond_effects, body_effects))

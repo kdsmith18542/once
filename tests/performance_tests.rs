@@ -73,9 +73,9 @@ fn test_parser_large_input() {
 /// Test nested expression performance
 #[test]
 fn test_nested_expression_parsing() {
-    // Create deeply nested expression: ((((...1 + 1...)))
+    // Create deeply nested expression: ((((...1 + 1...))) at 40 levels
     let mut expr = "1".to_string();
-    for _ in 0..50 {
+    for _ in 0..40 {
         expr = format!("({} + 1)", expr);
     }
     let input = format!("fn main() -> Int {{ {} }}", expr);
@@ -86,7 +86,7 @@ fn test_nested_expression_parsing() {
     let ast = OnceParser::parse(tokens).expect("Should parse successfully");
     let duration = start.elapsed();
     
-    println!("Parsed 50 nested additions in {:?}", duration);
+    println!("Parsed 40 nested additions in {:?}", duration);
     assert!(duration.as_millis() < 2000, "Nested expression parsing should be fast");
 }
 

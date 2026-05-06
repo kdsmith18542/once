@@ -168,6 +168,52 @@ impl RealCraneliftCodegen {
                     declared.push(("once_runtime_await".to_string(), func_id));
                 }
             }
+            // once_runtime_create_group() -> group_id: i64
+            {
+                let mut sig = Signature::new(CallConv::SystemV);
+                sig.returns.push(AbiParam::new(types::I64));
+                if let Ok(func_id) = module.declare_function("once_runtime_create_group", Linkage::Import, &sig) {
+                    declared.push(("once_runtime_create_group".to_string(), func_id));
+                }
+            }
+            // once_runtime_spawn_in_group(group_id: i64, func_ptr: i64, args_ptr: i64) -> task_handle: i64
+            {
+                let mut sig = Signature::new(CallConv::SystemV);
+                sig.params.push(AbiParam::new(types::I64));
+                sig.params.push(AbiParam::new(types::I64));
+                sig.params.push(AbiParam::new(types::I64));
+                sig.returns.push(AbiParam::new(types::I64));
+                if let Ok(func_id) = module.declare_function("once_runtime_spawn_in_group", Linkage::Import, &sig) {
+                    declared.push(("once_runtime_spawn_in_group".to_string(), func_id));
+                }
+            }
+            // once_runtime_await_group(group_id: i64) -> status: i64
+            {
+                let mut sig = Signature::new(CallConv::SystemV);
+                sig.params.push(AbiParam::new(types::I64));
+                sig.returns.push(AbiParam::new(types::I64));
+                if let Ok(func_id) = module.declare_function("once_runtime_await_group", Linkage::Import, &sig) {
+                    declared.push(("once_runtime_await_group".to_string(), func_id));
+                }
+            }
+            // once_runtime_capture_error_context(result_val: i64) -> i64
+            {
+                let mut sig = Signature::new(CallConv::SystemV);
+                sig.params.push(AbiParam::new(types::I64));
+                sig.returns.push(AbiParam::new(types::I64));
+                if let Ok(func_id) = module.declare_function("once_runtime_capture_error_context", Linkage::Import, &sig) {
+                    declared.push(("once_runtime_capture_error_context".to_string(), func_id));
+                }
+            }
+            // once_runtime_load_length(collection: i64) -> length: i64
+            {
+                let mut sig = Signature::new(CallConv::SystemV);
+                sig.params.push(AbiParam::new(types::I64));
+                sig.returns.push(AbiParam::new(types::I64));
+                if let Ok(func_id) = module.declare_function("once_runtime_load_length", Linkage::Import, &sig) {
+                    declared.push(("once_runtime_load_length".to_string(), func_id));
+                }
+            }
         } // module borrow ends
 
         // Populate func_map
@@ -434,10 +480,27 @@ impl RealCraneliftCodegen {
                 Ok(())
             }
             MirOp::Move { from, to } => {
-                let from_var = *var_map.get(from).ok_or_else(|| {
-                    RealCodegenError::UnsupportedOp(format!("Move from uninitialized variable: {:?}", from))
-                })?;
-                let val = builder.use_var(from_var);
+                let val: Value;
+                if let MirLocation::Index { base, index } = from {
+                    let base_var = *var_map.get(base.as_ref()).ok_or_else(|| {
+                        RealCodegenError::UnsupportedOp(format!("Move Index base var not found: {:?}", base))
+                    })?;
+                    let idx_var = *var_map.get(index.as_ref()).ok_or_else(|| {
+                        RealCodegenError::UnsupportedOp(format!("Move Index index var not found: {:?}", index))
+                    })?;
+                    let base_ptr = builder.use_var(base_var);
+                    let idx_val = builder.use_var(idx_var);
+                    let three = builder.ins().iconst(types::I64, 3);
+                    let offset = builder.ins().ishl(idx_val, three);
+                    let addr = builder.ins().iadd(base_ptr, offset);
+                    let flags = ir::MemFlags::trusted();
+                    val = builder.ins().load(types::I64, flags, addr, 0);
+                } else {
+                    let from_var = *var_map.get(from).ok_or_else(|| {
+                        RealCodegenError::UnsupportedOp(format!("Move from uninitialized variable: {:?}", from))
+                    })?;
+                    val = builder.use_var(from_var);
+                }
                 let to_var = get_or_create_var(var_map, next_var_idx, to);
                 declare_var(builder, declared_vars, to_var);
                 builder.def_var(to_var, val);
@@ -603,6 +666,60 @@ impl RealCraneliftCodegen {
                 builder.def_var(var, await_result);
                 Ok(())
             }
+            MirOp::CreateGroup { result } => {
+                let group_id = self.func_map.get("once_runtime_create_group").ok_or_else(|| {
+                    RealCodegenError::UnsupportedOp("once_runtime_create_group not declared".to_string())
+                })?;
+                let module = self.module.as_mut().ok_or_else(||
+                    RealCodegenError::ModuleError("Module not available".to_string()))?;
+                let func_ref = module.declare_func_in_func(*group_id, &mut builder.func);
+                let call_inst = builder.ins().call(func_ref, &[]);
+                let group_val = builder.func.dfg.first_result(call_inst);
+                let var = get_or_create_var(var_map, next_var_idx, result);
+                declare_var(builder, declared_vars, var);
+                builder.def_var(var, group_val);
+                Ok(())
+            }
+            MirOp::SpawnInGroup { group, function, args, result } => {
+                let group_var = *var_map.get(group).ok_or_else(|| {
+                    RealCodegenError::UnsupportedOp("SpawnInGroup group var not found".to_string())
+                })?;
+                let group_val = builder.use_var(group_var);
+                let func_ptr = builder.ins().iconst(types::I64, 0); // simplified placeholder
+                let arg_ptr = builder.ins().iconst(types::I64, 0); // simplified placeholder
+                let spawn_id = self.func_map.get("once_runtime_spawn_in_group").ok_or_else(|| {
+                    RealCodegenError::UnsupportedOp("once_runtime_spawn_in_group not declared".to_string())
+                })?;
+                let module = self.module.as_mut().ok_or_else(||
+                    RealCodegenError::ModuleError("Module not available".to_string()))?;
+                let func_ref = module.declare_func_in_func(*spawn_id, &mut builder.func);
+                let call_inst = builder.ins().call(func_ref, &[group_val, func_ptr, arg_ptr]);
+                let task_val = builder.func.dfg.first_result(call_inst);
+                let var = get_or_create_var(var_map, next_var_idx, result);
+                declare_var(builder, declared_vars, var);
+                builder.def_var(var, task_val);
+                let _ = function; // consumed in future with real function pointers
+                let _ = args;
+                Ok(())
+            }
+            MirOp::AwaitGroup { group, result } => {
+                let group_var = *var_map.get(group).ok_or_else(|| {
+                    RealCodegenError::UnsupportedOp("AwaitGroup group var not found".to_string())
+                })?;
+                let group_val = builder.use_var(group_var);
+                let await_id = self.func_map.get("once_runtime_await_group").ok_or_else(|| {
+                    RealCodegenError::UnsupportedOp("once_runtime_await_group not declared".to_string())
+                })?;
+                let module = self.module.as_mut().ok_or_else(||
+                    RealCodegenError::ModuleError("Module not available".to_string()))?;
+                let func_ref = module.declare_func_in_func(*await_id, &mut builder.func);
+                let call_inst = builder.ins().call(func_ref, &[group_val]);
+                let await_result = builder.func.dfg.first_result(call_inst);
+                let var = get_or_create_var(var_map, next_var_idx, result);
+                declare_var(builder, declared_vars, var);
+                builder.def_var(var, await_result);
+                Ok(())
+            }
             MirOp::Call { function, args, result } => {
                 // Look up the function reference in func_map
                 let func_id = self.func_map.get(function)
@@ -680,9 +797,36 @@ impl RealCraneliftCodegen {
                 builder.def_var(dest_var, result);
                 Ok(())
             }
-            MirOp::TryBlock { result: _ } => {
-                // Try block: placeholder for error context capture
-                // In a full implementation, this would instrument error handling with location info
+            MirOp::TryBlock { result } => {
+                let result_var = *var_map.get(result).ok_or_else(|| {
+                    RealCodegenError::UnsupportedOp("TryBlock result var not found".to_string())
+                })?;
+                let result_val = builder.use_var(result_var);
+                let capture_id = self.func_map.get("once_runtime_capture_error_context").ok_or_else(|| {
+                    RealCodegenError::UnsupportedOp("once_runtime_capture_error_context not declared".to_string())
+                })?;
+                let module = self.module.as_mut().ok_or_else(||
+                    RealCodegenError::ModuleError("Module not available".to_string()))?;
+                let func_ref = module.declare_func_in_func(*capture_id, &mut builder.func);
+                let _call_inst = builder.ins().call(func_ref, &[result_val]);
+                Ok(())
+            }
+            MirOp::LoadLength { base, dest } => {
+                let base_var = *var_map.get(&base).ok_or_else(|| {
+                    RealCodegenError::UnsupportedOp("LoadLength base var not found".to_string())
+                })?;
+                let base_val = builder.use_var(base_var);
+                let load_id = self.func_map.get("once_runtime_load_length").ok_or_else(|| {
+                    RealCodegenError::UnsupportedOp("once_runtime_load_length not declared".to_string())
+                })?;
+                let module = self.module.as_mut().ok_or_else(||
+                    RealCodegenError::ModuleError("Module not available".to_string()))?;
+                let func_ref = module.declare_func_in_func(*load_id, &mut builder.func);
+                let call_inst = builder.ins().call(func_ref, &[base_val]);
+                let result_val = builder.func.dfg.first_result(call_inst);
+                let dest_var = get_or_create_var(var_map, next_var_idx, dest);
+                declare_var(builder, declared_vars, dest_var);
+                builder.def_var(dest_var, result_val);
                 Ok(())
             }
             MirOp::Return { .. } | MirOp::Jump { .. } | MirOp::Branch { .. } | MirOp::Label { .. } => {

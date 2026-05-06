@@ -4,7 +4,7 @@ This document describes the architecture and design decisions of the Once langua
 
 ## Overview
 
-Once is designed as a modern systems programming language that combines memory safety, performance, and simplicity. The compiler is built as a collection of modular Rust crates, each responsible for a specific aspect of compilation.
+Once is designed as a modern systems programming language that combines memory safety, performance, and simplicity. The compiler is built as a collection of 21 modular Rust crates, each responsible for a specific aspect of compilation.
 
 ## Compiler Architecture
 
@@ -13,7 +13,7 @@ Once is designed as a modern systems programming language that combines memory s
 #### Lexical Analysis (`once-lex`)
 - **Purpose**: Tokenize source code into tokens
 - **Technology**: `logos` crate for efficient lexing
-- **Features**: 
+- **Features**:
   - Keyword recognition
   - Identifier and literal parsing
   - Comment handling
@@ -39,19 +39,13 @@ Once is designed as a modern systems programming language that combines memory s
 ### Middle-End
 
 #### Type System (`once-ty`)
-- **Purpose**: Hindley-Milner type inference
+- **Purpose**: Hindley-Milner type inference with row-polymorphic effects
 - **Features**:
   - Type variable management
   - Constraint solving
   - Type scheme generalization
   - Polymorphic type inference
-
-#### Effects System (`once-effects`)
-- **Purpose**: Row-polymorphic effect tracking
-- **Features**:
-  - Effect row construction
-  - Effect constraint solving
-  - Effect polymorphism
+  - Effect row construction, constraint solving, and polymorphism (includes effects module at `src/effects.rs`)
   - Async/await effect tracking
 
 #### Linearity System (`once-linear`)
@@ -68,17 +62,34 @@ Once is designed as a modern systems programming language that combines memory s
   - Region DAG construction
   - Liveness analysis
   - Escape analysis
-  - Cycle detection
+  - Constraint solving and free placement
+
+#### Bounds Checking (`once-bounds`)
+- **Purpose**: Compile-time bounds checking and proof generation
+- **Features**:
+  - Array bounds verification
+  - Proof generation
+  - Check erasure
+  - Optimization opportunities
 
 ### Backend
 
 #### Mid-Level IR (`once-mir`)
-- **Purpose**: Lowered IR with explicit operations
+- **Purpose**: Lowered IR with explicit operations and control-flow graph
 - **Features**:
-  - Explicit move operations
-  - Drop operations
-  - Region frees
-  - Function calls and returns
+  - Explicit move and drop operations
+  - Region allocation and free operations
+  - Bounds check annotations with proof status
+  - Function calls, channel operations, spawn/await, group concurrency
+  - SSA-like basic blocks with labels, jumps, and branches
+
+#### Optimization (`once-opt`)
+- **Purpose**: MIR-level optimization passes
+- **Features**:
+  - Dead code elimination
+  - Move optimization
+  - Copy elision
+  - Region coalescing
 
 #### Code Generation (`once-codegen`)
 - **Purpose**: Generate machine code from MIR
@@ -89,23 +100,100 @@ Once is designed as a modern systems programming language that combines memory s
   - Object file generation
   - Assembly output
 
+#### Object Format (`once-onceo`)
+- **Purpose**: .onceo object file format with type/effect/region summaries
+- **Features**:
+  - Module-level metadata
+  - Type and effect summaries for link-time checks
+  - Region information for inter-module optimization
+
+#### Linker (`once-linker`)
+- **Purpose**: Link .onceo object files into executables
+- **Features**:
+  - Capability ceiling enforcement
+  - Version deduplication via namespacing
+  - Effect compatibility verification
+
 ### Runtime
 
 #### Runtime System (`once-runtime`)
-- **Purpose**: Runtime support for concurrency and I/O
+- **Purpose**: Runtime support for concurrency, I/O, and memory management
 - **Features**:
-  - Deterministic scheduler
-  - Channel implementation
-  - Actor system
-  - Deadlock detection
+  - Deterministic work-stealing scheduler
+  - Channel implementation with backpressure policies
+  - Actor system with message-passing
+  - Deadlock detection (wait-for graph cycle detection)
+  - Task groups for structured concurrency
+  - Region-based memory management with arena allocation
+  - Effect registry for runtime capability tracking
 
 #### Standard Library (`once-std`)
 - **Purpose**: Core types and operations
 - **Features**:
   - Linear types (File, TcpStream, etc.)
-  - Resource management
+  - Resource management (Resource trait)
   - Memory allocation
   - I/O operations
+
+#### Actor Model (`once-actors`)
+- **Purpose**: Message-passing concurrency with actor model
+- **Features**:
+  - Actor spawning with mailbox channels
+  - Message handling loops
+  - Supervisor patterns
+  - Fault tolerance
+
+### Tooling & Developer Experience
+
+#### CLI (`once-cli`)
+- **Purpose**: Command-line interface for all development tasks
+- **Features**:
+  - `once build`, `once run`, `once test`, `once fmt`, `once lint`
+  - `once new` project scaffolding
+  - `once explain` diagnostic visualization
+
+#### Build System (`once-build`)
+- **Purpose**: Project management and dependency resolution
+- **Features**:
+  - Hermetic builds
+  - Dependency management
+  - Build caching
+  - Capability enforcement
+  - Test compilation and running
+
+#### Lockfile (`once-lockfile`)
+- **Purpose**: Content-addressed dependency version locking
+- **Features**:
+  - Cryptographic hash verification
+  - Transitive dependency graph resolution
+  - Effect and capability ceiling recording
+
+#### Language Server (`once-lsp`)
+- **Purpose**: IDE integration and developer experience
+- **Features**:
+  - Syntax highlighting
+  - Error reporting and diagnostics
+  - Code completion
+  - Go-to-definition
+  - Hover type/effect display
+
+#### Diagnostics & Explain (`once-explain`)
+- **Purpose**: Rich diagnostic visualization and fix-its
+- **Features**:
+  - Region graph visualization
+  - Effect derivation tracing
+  - Linearity chain debugging
+  - Actionable fix-it suggestions
+
+### Interop & Platform
+
+#### WebAssembly Support (`once-wasm`)
+- **Purpose**: WebAssembly Component Model integration
+- **Features**:
+  - Component interface generation
+  - PCC-lite validation
+  - Cross-language interoperability
+  - Security guarantees
 
 ## Language Design
 
@@ -124,7 +212,7 @@ The type system combines several advanced features:
 
 1. **Hindley-Milner Inference**: Automatic type inference
 2. **Linear Types**: Track resource usage and prevent leaks
-3. **Row-Polymorphic Effects**: Track computational effects
+3. **Row-Polymorphic Effects**: Track computational effects (integrated in `once-ty`)
 4. **Region Types**: Track memory lifetimes
 
 ### Concurrency Model
@@ -135,49 +223,7 @@ Once provides multiple concurrency primitives:
 2. **Channels**: Type-safe communication
 3. **Async/Await**: Structured concurrency
 4. **Deterministic Scheduler**: Reproducible execution
-
-## Advanced Features
-
-### Language Server Protocol (`once-lsp`)
-- **Purpose**: IDE integration and developer experience
-- **Features**:
-  - Syntax highlighting
-  - Error reporting
-  - Code completion
-  - Go-to-definition
-  - Refactoring support
-
-### Build System (`once-build`)
-- **Purpose**: Project management and dependency resolution
-- **Features**:
-  - Hermetic builds
-  - Dependency management
-  - Build caching
-  - Parallel execution
-
-### Bounds Checking (`once-bounds`)
-- **Purpose**: Compile-time bounds checking
-- **Features**:
-  - Array bounds verification
-  - Proof generation
-  - Check erasure
-  - Optimization opportunities
-
-### Actor Model (`once-actors`)
-- **Purpose**: Message-passing concurrency
-- **Features**:
-  - Actor spawning
-  - Message handling
-  - Supervisor patterns
-  - Fault tolerance
-
-### WebAssembly Support (`once-wasm`)
-- **Purpose**: WebAssembly Component Model integration
-- **Features**:
-  - Component interface generation
-  - PCC-lite validation
-  - Cross-language interoperability
-  - Security guarantees
+5. **Task Groups**: Structured concurrency with guaranteed completion
 
 ## Performance Considerations
 
@@ -190,8 +236,8 @@ Once provides multiple concurrency primitives:
 ### Runtime Performance
 - **Zero-cost Abstractions**: No runtime overhead for safety features
 - **Native Code Generation**: Compile to optimized machine code
-- **Memory Efficiency**: Minimal memory overhead
-- **Concurrency**: Efficient scheduling and communication
+- **Memory Efficiency**: Minimal memory overhead with bulk region deallocation
+- **Concurrency**: Work-stealing scheduler with per-worker deques
 
 ## Security Features
 
@@ -207,6 +253,11 @@ Once provides multiple concurrency primitives:
 - **No Race Conditions**: Linear types and ownership
 - **No Resource Leaks**: Automatic cleanup and resource management
 
+### Supply-Chain Security
+- **Capability Enforcement**: Build-time verification of declared effects
+- **Lockfile Integrity**: Cryptographic hash verification of all dependencies
+- **Reproducible Builds**: Byte-for-byte identical output
+
 ## Future Directions
 
 ### Planned Features
@@ -221,7 +272,3 @@ Once provides multiple concurrency primitives:
 2. **Performance Analysis**: Advanced performance profiling
 3. **Language Extensions**: New language features and constructs
 4. **Tooling**: Better developer tools and debugging support
-
-## Conclusion
-
-Once represents a novel approach to systems programming, combining the safety of modern languages with the performance of traditional systems languages. The modular architecture allows for incremental development and easy extension, while the advanced type system provides strong safety guarantees without sacrificing performance.

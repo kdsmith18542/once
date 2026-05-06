@@ -27,7 +27,8 @@ fn test_linear_used_once() {
                     statements: vec![
                         HirStmt::Expr(HirExpr::Call {
                             function: "consume".to_string(),
-                            args: vec![HirExpr::Ident("f".to_string())],
+                            args: vec![HirExpr::Ident("f".to_string(), None)],
+                            span: None,
                         }),
                         HirStmt::Return(HirReturnStmt { value: None, span: None }),
                     ],
@@ -64,8 +65,8 @@ fn test_linear_used_twice_fails() {
                 effects: None,
                 body: HirBlock {
                     statements: vec![
-                        HirStmt::Expr(HirExpr::Ident("f".to_string())),
-                        HirStmt::Expr(HirExpr::Ident("f".to_string())),
+                        HirStmt::Expr(HirExpr::Ident("f".to_string(), None)),
+                        HirStmt::Expr(HirExpr::Ident("f".to_string(), None)),
                         HirStmt::Return(HirReturnStmt { value: None, span: None }),
                     ],
                     span: None,
@@ -153,9 +154,9 @@ fn test_non_linear_multiple_use() {
                 effects: None,
                 body: HirBlock {
                     statements: vec![
-                        HirStmt::Expr(HirExpr::Ident("x".to_string())),
-                        HirStmt::Expr(HirExpr::Ident("x".to_string())),
-                        HirStmt::Expr(HirExpr::Ident("x".to_string())),
+                        HirStmt::Expr(HirExpr::Ident("x".to_string(), None)),
+                        HirStmt::Expr(HirExpr::Ident("x".to_string(), None)),
+                        HirStmt::Expr(HirExpr::Ident("x".to_string(), None)),
                         HirStmt::Return(HirReturnStmt { value: None, span: None }),
                     ],
                     span: None,

@@ -20,17 +20,18 @@ fn test_linear_variable_branch_mismatch_fails() {
                 body: HirBlock {
                     statements: vec![
                         HirStmt::Expr(HirExpr::If {
-                            condition: Box::new(HirExpr::Literal(HirLiteral::Bool(true))),
+                            condition: Box::new(HirExpr::Literal(HirLiteral::Bool(true), None)),
                             then_branch: HirBlock {
                                 statements: vec![
-                                    HirStmt::Expr(HirExpr::Ident("f".to_string())),
+                                    HirStmt::Expr(HirExpr::Ident("f".to_string(), None)),
                                 ],
                                 span: None,
                             },
                             else_branch: Some(Box::new(HirExpr::Block(HirBlock {
                                 statements: vec![],
                                 span: None,
-                            }))),
+                            }, None))),
+                            span: None,
                         }),
                         HirStmt::Return(HirReturnStmt { value: None, span: None }),
                     ],

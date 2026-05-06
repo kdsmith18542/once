@@ -442,6 +442,7 @@ mod tests {
         
         let fn_decl = HirFnDecl {
             name: "main".to_string(),
+            type_params: Vec::new(),
             params: Vec::new(),
             return_type: None,
             effects: None,

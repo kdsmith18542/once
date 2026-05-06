@@ -158,6 +158,12 @@ pub enum Instruction {
     SpawnTask { func: String, args: Vec<String>, dest: String },
     /// Await task
     AwaitTask { task: String, dest: String },
+    /// Create a task group for structured concurrency
+    CreateGroup { dest: String },
+    /// Spawn task within a group
+    SpawnInGroup { group: String, func: String, args: Vec<String>, dest: String },
+    /// Await all tasks in a group
+    AwaitGroup { group: String, dest: String },
     /// Arithmetic operations
     Add { dest: String, left: String, right: String, ty: Type },
     Sub { dest: String, left: String, right: String, ty: Type },
@@ -500,6 +506,31 @@ impl CodeGenerator {
                     dest: result_reg,
                 });
             }
+            MirOp::CreateGroup { result } => {
+                let result_reg = self.get_register(result);
+                instructions.push(Instruction::CreateGroup {
+                    dest: result_reg,
+                });
+            }
+            MirOp::SpawnInGroup { group, function, args, result } => {
+                let group_reg = self.get_register(group);
+                let result_reg = self.get_register(result);
+                let arg_regs: Vec<String> = args.iter().map(|arg| self.get_register(arg)).collect();
+                instructions.push(Instruction::SpawnInGroup {
+                    group: group_reg,
+                    func: function.clone(),
+                    args: arg_regs,
+                    dest: result_reg,
+                });
+            }
+            MirOp::AwaitGroup { group, result } => {
+                let group_reg = self.get_register(group);
+                let result_reg = self.get_register(result);
+                instructions.push(Instruction::AwaitGroup {
+                    group: group_reg,
+                    dest: result_reg,
+                });
+            }
             MirOp::Call { function, args, result } => {
                 let result_reg = self.get_register(result);
                 let arg_regs: Vec<String> = args.iter().map(|arg| self.get_register(arg)).collect();
@@ -575,9 +606,31 @@ impl CodeGenerator {
                     name: format!("label_{}", id),
                 });
             }
-            MirOp::TryBlock { result: _ } => {
-                // Try block: placeholder for error context capture
-                // In a full implementation, this would wrap results with location info
+            MirOp::TryBlock { result } => {
+                // Emit error context instrumentation: record source location data
+                // that the runtime uses to enrich propagated errors.
+                let result_reg = self.get_register(&result);
+                let _ctx_id = self.context.next_temp;
+                self.context.next_temp += 1;
+                // Emit a call to the runtime error context capture function
+                instructions.push(Instruction::Call {
+                    dest: None,
+                    func: "once_runtime_capture_error_context".to_string(),
+                    args: vec![result_reg],
+                    ty: Type::Int(IntWidth::I64),
+                });
+            }
+            MirOp::LoadLength { base, dest } => {
+                // Load the length of a collection object.
+                // The length is stored as a field in the collection header.
+                let _base_reg = self.get_register(&base);
+                let dest_reg = self.get_register(&dest);
+                instructions.push(Instruction::Call {
+                    dest: Some(dest_reg),
+                    func: "once_runtime_load_length".to_string(),
+                    args: vec![_base_reg],
+                    ty: Type::Int(IntWidth::I64),
+                });
             }
         }
 

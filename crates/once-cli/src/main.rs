@@ -1,15 +1,17 @@
 //! Command-line interface for the Once compiler
 
 use clap::{Parser, Subcommand, ValueEnum};
+use anyhow::Context;
 use once_lex::Lexer;
 use once_parse::OnceParser;
 use once_hir::HirBuilder;
 use once_ty::TypeChecker;
-use once_ty::effects::EffectChecker;
-use once_linear::LinearityChecker;
+use once_ty::effects::{EffectChecker, EffectRow};
+use once_linear::{LinearityChecker, Linearity};
 use once_rinf::RegionChecker;
 
 mod lint;
+mod mir_eval;
 use once_mir::MirGenerator;
 use once_codegen::CodeGenerator;
 use once_runtime::Runtime;
@@ -33,6 +35,8 @@ enum ExplainTopic {
     Regions,
     Effects,
     Linearity,
+    #[value(alias = "escape")]
+    EscapeAnalysis,
 }
 
 #[derive(Subcommand)]
@@ -101,6 +105,20 @@ enum Commands {
         #[arg(short, long)]
         input: PathBuf,
     },
+    /// Run tests
+    Test {
+        /// Test directory (defaults to tests/)
+        #[arg(short, long)]
+        dir: Option<PathBuf>,
+        
+        /// Run only tests matching pattern
+        #[arg(short, long)]
+        filter: Option<String>,
+
+        /// Run tests in deterministic (single-threaded) scheduler mode for reproducible results
+        #[arg(long)]
+        deterministic: bool,
+    },
     /// Build project
     BuildProject {
         /// Project directory
@@ -114,16 +132,22 @@ enum Commands {
     },
     /// Explain compiler analysis
     Explain {
-        /// Topic to explain
-        topic: ExplainTopic,
+        /// Topic to explain (regions, effects, linearity)
+        topic: Option<ExplainTopic>,
+        /// Error code to explain (e.g., E001)
+        #[arg(long)]
+        error_code: Option<String>,
         /// Input file
-        input: PathBuf,
+        input: Option<PathBuf>,
     },
-    /// Start language server
+    /// Start the Language Server
     Lsp {
-        /// LSP mode
+        /// Use stdio transport (default)
         #[arg(long)]
         stdio: bool,
+        /// Use TCP transport on the given port
+        #[arg(long, default_value_t = 0)]
+        port: u16,
     },
     /// Auto-fix common issues
     Fix {
@@ -142,6 +166,35 @@ enum Commands {
     Lint {
         /// Input file
         input: PathBuf,
+    },
+    /// Output unified JSON analysis of compiler stages
+    Analyze {
+        /// Source file to analyze
+        file: String,
+        /// Output format (json only for now)
+        #[arg(long, default_value = "json")]
+        format: String,
+        /// Output file (stdout if not specified)
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+    /// Manage AI-synthesized goals
+    Goal {
+        #[command(subcommand)]
+        action: GoalAction,
+    },
+}
+
+/// Goal management actions
+#[derive(Subcommand)]
+enum GoalAction {
+    /// Eject a goal declaration into a concrete function implementation
+    Eject {
+        /// The goal name to eject
+        name: String,
+        /// Input file
+        #[arg(short, long)]
+        file: String,
     },
 }
 
@@ -179,17 +232,35 @@ fn main() -> anyhow::Result<()> {
         Commands::Run { input } => {
             run_program(&input)?;
         }
+        Commands::Test { dir, filter, deterministic } => {
+            run_tests(dir.as_deref(), filter.as_deref(), deterministic)?;
+        }
         Commands::BuildProject { project } => {
             build_project(project.as_deref())?;
         }
         Commands::New { name } => {
             create_project(&name)?;
         }
-        Commands::Explain { topic, input } => {
-            explain_file(&topic, &input)?;
+        Commands::Explain { topic, error_code, input } => {
+            if let Some(code) = error_code {
+                explain_error_code(&code);
+            } else if let (Some(t), Some(f)) = (topic, input) {
+                explain_file(&t, &f)?;
+            } else {
+                anyhow::bail!("Specify either a topic with --input, or --error-code <code>");
+            }
         }
-        Commands::Lsp { stdio } => {
-            start_lsp_server(stdio)?;
+        Commands::Lsp { stdio, port } => {
+            let rt = tokio::runtime::Runtime::new()
+                .context("Failed to create Tokio runtime")?;
+
+            if port > 0 {
+                rt.block_on(once_lsp::start_lsp_server_tcp(port))
+                    .map_err(|e| anyhow::anyhow!("TCP LSP server failed: {}", e))?;
+            } else {
+                rt.block_on(once_lsp::start_lsp_server())
+                    .map_err(|e| anyhow::anyhow!("LSP server failed: {}", e))?;
+            }
         }
         Commands::Fix { mode, input } => {
             fix_file(&mode, &input)?;
@@ -200,6 +271,43 @@ fn main() -> anyhow::Result<()> {
         Commands::Lint { input } => {
             lint_file(&input)?;
         }
+        Commands::Analyze { file, format: _, output } => {
+            analyze_file(&file, output.as_deref())?;
+        }
+        Commands::Goal { action } => match action {
+            GoalAction::Eject { name, file } => {
+                let source = std::fs::read_to_string(&file)
+                    .context("Failed to read source file")?;
+
+                let lexer = Lexer::new(&source);
+                let tokens: Vec<_> = lexer.collect();
+                let ast = OnceParser::parse(tokens)
+                    .map_err(|e| anyhow::anyhow!("Parse error: {}", e))?;
+
+                let builder = HirBuilder::new();
+                let hir = builder.build(ast)
+                    .map_err(|e| anyhow::anyhow!("HIR error: {:?}", e))?;
+
+                let goal_fn = hir.items.iter().find_map(|item| {
+                    if let once_hir::HirItem::FnDecl(f) = item {
+                        if f.name == name { Some(f) } else { None }
+                    } else { None }
+                });
+
+                match goal_fn {
+                    Some(_) => {
+                        let output = source.replace(&format!("goal fn {}", name), &format!("fn {}", name));
+                        let out_path = format!("{}.ejected.onc", file.trim_end_matches(".onc"));
+                        std::fs::write(&out_path, &output)
+                            .context("Failed to write ejected output")?;
+                        println!("Goal '{}' ejected to {}", name, out_path);
+                    }
+                    None => {
+                        anyhow::bail!("Goal '{}' not found in {}", name, file);
+                    }
+                }
+            }
+        },
     }
 
     Ok(())
@@ -222,7 +330,12 @@ fn compile_file(input: &PathBuf, output: Option<&Path>) -> anyhow::Result<()> {
     
     // Type checking
     let mut type_checker = TypeChecker::new();
-    type_checker.check(&hir).map_err(|e| anyhow::anyhow!("Type error: {:?}", e))?;
+    if let Err(errors) = type_checker.check(&hir) {
+        for err in &errors {
+            eprintln!("{}", err.diagnostic_with_source(&source));
+        }
+        return Err(anyhow::anyhow!("Type checking failed"));
+    }
     println!("Type checking passed");
     
     // Effects checking
@@ -247,6 +360,14 @@ fn compile_file(input: &PathBuf, output: Option<&Path>) -> anyhow::Result<()> {
     let mut mir_generator = MirGenerator::new();
     let mir = mir_generator.generate(&hir, region_dag.clone()).map_err(|e| anyhow::anyhow!("MIR error: {:?}", e))?;
     println!("MIR generation passed");
+    
+    // MIR verification
+    let verifier = once_mir::MirVerifier::new();
+    if let Err(errors) = verifier.verify_program(&mir) {
+        for err in &errors {
+            eprintln!("MIR verification warning: {}", err);
+        }
+    }
     
     // Code generation
     // Try to use real Cranelift code generator
@@ -330,8 +451,8 @@ fn typecheck_file(input: &PathBuf) -> anyhow::Result<()> {
         }
         Err(errors) => {
             println!("Type checking failed:");
-            for error in errors {
-                println!("  {}", error);
+            for error in &errors {
+                eprintln!("{}", error.diagnostic_with_source(&source));
             }
             return Err(anyhow::anyhow!("Type checking failed"));
         }
@@ -437,6 +558,32 @@ fn check_regions(input: &PathBuf) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn explain_error_code(code: &str) {
+    let explanations = [
+        ("E001", "Type mismatch — the compiler expected one type but found another.", "Check type annotations, or add explicit conversion (type cast)."),
+        ("E002", "Undefined variable — a name was used that has no binding in scope.", "Define the variable with `let` before use, or check the spelling."),
+        ("E003", "Missing return type annotation — top-level functions must have explicit `-> Type`.", "Add `-> Int`, `-> String`, `-> Unit`, or the appropriate type after the parameter list."),
+        ("E004", "Unhandled effect — a function body uses an effect not declared in the function signature.", "Add `!io`, `!net`, `!spawn`, etc. to the function's effect annotation."),
+        ("E005", "Linear value reused — a value marked `lin` or `aff` was used after being consumed.", "Ensure the value is only used once, or use `copy()` to create a duplicate."),
+        ("E006", "Non-exhaustive match — a `match` expression doesn't cover all possible patterns.", "Add a wildcard `_` arm or cover all enum variants."),
+        ("E007", "Region constraint unsatisfiable — memory region analysis found a conflict.", "Check that allocations are freed in the correct scope and values don't escape their regions."),
+        ("E008", "Trait bound not satisfied — a type doesn't implement a required trait.", "Implement the trait for the type, or use a different type that satisfies the bound."),
+        ("E009", "Missing effect annotation on exported function — public functions must declare effects explicitly.", "Add effect annotations like `!io`, `!net` to the function signature."),
+        ("E010", "Channel deadlock detected — tasks are waiting on each other in a cycle.", "Restructure channel communication to break the dependency cycle."),
+    ];
+
+    let code_upper = code.to_uppercase();
+    for (id, description, fix) in &explanations {
+        if id == &code_upper {
+            println!("\n  {}: {}\n", id, description);
+            println!("  Common fix: {}\n", fix);
+            return;
+        }
+    }
+    println!("\n  Unknown error code: {}\n", code);
+    println!("  Available codes: E001 - E010\n");
+}
+
 fn explain_file(topic: &ExplainTopic, input: &PathBuf) -> anyhow::Result<()> {
     let source = fs::read_to_string(input)?;
     let lexer = Lexer::new(&source);
@@ -454,16 +601,200 @@ fn explain_file(topic: &ExplainTopic, input: &PathBuf) -> anyhow::Result<()> {
         ExplainTopic::Effects => {
             let mut effect_checker = EffectChecker::new();
             effect_checker.check(&hir).map_err(|e| anyhow::anyhow!("Effects error: {:?}", e))?;
-            println!("Effects analysis passed.");
-            println!("All effect rows are properly tracked through the call graph.");
+
+            println!("Effect Analysis Results:");
+            println!("=======================\n");
+            let bindings = &effect_checker.env.bindings;
+            if bindings.is_empty() {
+                println!("No effect bindings found. All functions are pure.");
+            }
+            for (name, effect_row) in bindings {
+                let effect_str = format!("{:?}", effect_row);
+                if effect_str != "Empty" {
+                    println!("  {}  →  {:?}", name, effect_row);
+                }
+            }
+            if bindings.values().all(|r| matches!(r, EffectRow::Empty)) {
+                println!("All functions are pure (no effects).");
+            }
         }
         ExplainTopic::Linearity => {
             let mut linearity_checker = LinearityChecker::new();
             linearity_checker.check(&hir).map_err(|e| anyhow::anyhow!("Linearity error: {:?}", e))?;
-            println!("Linearity analysis passed.");
-            println!("All linear values are consumed exactly once.");
+
+            println!("Linearity Analysis Results:");
+            println!("==========================\n");
+            let variables = &linearity_checker.env.variables;
+            if variables.is_empty() {
+                println!("No linear variables tracked.");
+            }
+            for (name, usage) in variables {
+                let lin_str = match usage.linearity {
+                    Linearity::Linear => "linear",
+                    Linearity::Affine => "affine",
+                    Linearity::NonLinear => "nonlinear",
+                };
+                println!("  {}  [{}]  used {} time(s)", name, lin_str, usage.usage_count);
+                if let Some(first) = usage.first_use {
+                    println!("    first use:  line {} col {}", first.line, first.column);
+                }
+                if let Some(last) = usage.last_use {
+                    println!("    last use:   line {} col {}", last.line, last.column);
+                }
+            }
+        }
+        ExplainTopic::EscapeAnalysis => {
+            use once_explain::Explainer;
+            let span = once_lex::Span { start: 0, end: source.len(), line: 1, column: 1 };
+            let mut explainer = Explainer::new();
+            let explanation = explainer.explain_regions(&hir, span)
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            println!("{}", explainer.format_region_explanation(&explanation));
         }
     }
+    Ok(())
+}
+
+fn analyze_file(file: &str, output: Option<&str>) -> Result<(), anyhow::Error> {
+    let source = std::fs::read_to_string(file)
+        .context("Failed to read source file")?;
+
+    let mut analysis = serde_json::Map::new();
+
+    // Stage 1: Lex
+    let lexer = Lexer::new(&source);
+    let tokens: Vec<once_lex::TokenWithSpan> = lexer.collect();
+
+    let token_json: Vec<_> = tokens.iter().map(|t| {
+        let mut m = serde_json::Map::new();
+        m.insert("token".to_string(), serde_json::Value::String(format!("{:?}", t.token)));
+        m.insert("span".to_string(), serde_json::json!({
+            "start": t.span.start,
+            "end": t.span.end,
+            "line": t.span.line,
+            "column": t.span.column,
+        }));
+        serde_json::Value::Object(m)
+    }).collect();
+    analysis.insert("tokens".to_string(), serde_json::Value::Array(token_json));
+
+    // Stage 2: Parse
+    let ast = match OnceParser::parse(tokens) {
+        Ok(ast) => {
+            analysis.insert("ast".to_string(), serde_json::json!({
+                "item_count": ast.items.len(),
+                "items": ast.items.iter().map(|item| format!("{:?}", item)).collect::<Vec<_>>(),
+            }));
+            Some(ast)
+        }
+        Err(e) => {
+            analysis.insert("parse_error".to_string(), serde_json::Value::String(e));
+            None
+        }
+    };
+
+    // Stage 3: HIR
+    if let Some(ast) = ast {
+        let hir = match HirBuilder::new().build(ast) {
+            Ok(hir) => {
+                analysis.insert("hir".to_string(), serde_json::json!({
+                    "item_count": hir.items.len(),
+                    "import_count": hir.imports.len(),
+                }));
+                Some(hir)
+            }
+            Err(e) => {
+                analysis.insert("hir_error".to_string(), serde_json::Value::String(format!("{:?}", e)));
+                None
+            }
+        };
+
+        // Stage 4: Type check
+        if let Some(ref hir) = hir {
+            let mut type_checker = TypeChecker::new();
+            match type_checker.check(hir) {
+                Ok(()) => {
+                    let bindings: serde_json::Map<String, serde_json::Value> = type_checker.env.bindings.iter()
+                        .filter(|(k, _)| !matches!(k.as_str(), "Unit" | "Int" | "Bool" | "Float" | "Str" | "print" | "spawn"))
+                        .map(|(k, v)| (k.clone(), serde_json::Value::String(format!("{}", v.ty))))
+                        .collect();
+                    analysis.insert("types".to_string(), serde_json::Value::Object(bindings));
+                }
+                Err(errors) => {
+                    analysis.insert("type_errors".to_string(), serde_json::Value::Array(
+                        errors.iter().map(|e| serde_json::Value::String(e.diagnostic())).collect()
+                    ));
+                }
+            }
+
+            // Stage 5: Effects
+            let mut effect_checker = EffectChecker::new();
+            match effect_checker.check(hir) {
+                Ok(()) => {
+                    let effects: serde_json::Map<String, serde_json::Value> = effect_checker.env.bindings.iter()
+                        .map(|(k, v)| (k.clone(), serde_json::Value::String(format!("{}", v))))
+                        .collect();
+                    analysis.insert("effects".to_string(), serde_json::Value::Object(effects));
+                }
+                Err(errors) => {
+                    analysis.insert("effect_errors".to_string(), serde_json::Value::Array(
+                        errors.iter().map(|e| serde_json::Value::String(format!("{}", e))).collect()
+                    ));
+                }
+            }
+
+            // Stage 6: Regions
+            let mut region_checker = RegionChecker::new();
+            match region_checker.check(hir) {
+                Ok(dag) => {
+                    let nodes: Vec<serde_json::Value> = dag.nodes.iter().map(|(region, node)| {
+                        serde_json::json!({
+                            "region": format!("{}", region),
+                            "allocations": node.allocations.len(),
+                            "escapes": node.escapes.len(),
+                        })
+                    }).collect();
+                    analysis.insert("regions".to_string(), serde_json::Value::Array(nodes));
+
+                    // Stage 7: MIR
+                    let mut mir_gen = MirGenerator::new();
+                    match mir_gen.generate(hir, dag) {
+                        Ok(mir) => {
+                            let funcs: Vec<serde_json::Value> = mir.functions.iter().map(|f| {
+                                serde_json::json!({
+                                    "name": f.name,
+                                    "statement_count": f.body.statements.len(),
+                                    "operations": f.body.statements.iter().map(|s| format!("{:?}", s.op)).collect::<Vec<_>>(),
+                                })
+                            }).collect();
+                            analysis.insert("mir".to_string(), serde_json::Value::Array(funcs));
+                        }
+                        Err(e) => {
+                            analysis.insert("mir_error".to_string(), serde_json::Value::String(format!("{:?}", e)));
+                        }
+                    }
+                }
+                Err(errors) => {
+                    analysis.insert("region_errors".to_string(), serde_json::Value::Array(
+                        errors.iter().map(|e| serde_json::Value::String(format!("{:?}", e))).collect()
+                    ));
+                }
+            }
+        }
+    }
+
+    // Output
+    let json = serde_json::Value::Object(analysis);
+    let output_str = serde_json::to_string_pretty(&json).context("Failed to serialize JSON")?;
+
+    match output {
+        Some(path) => {
+            std::fs::write(path, output_str).context("Failed to write output")?;
+            println!("Analysis written to {}", path);
+        }
+        None => println!("{}", output_str),
+    }
+
     Ok(())
 }
 
@@ -596,6 +927,14 @@ fn generate_code(input: &PathBuf) -> anyhow::Result<()> {
     let mir = mir_generator.generate(&hir, region_dag.clone()).map_err(|e| anyhow::anyhow!("MIR error: {:?}", e))?;
     println!("MIR generation completed");
 
+    // MIR verification
+    let verifier = once_mir::MirVerifier::new();
+    if let Err(errors) = verifier.verify_program(&mir) {
+        for err in &errors {
+            eprintln!("MIR verification warning: {}", err);
+        }
+    }
+
     // Generate code
     let mut code_generator = CodeGenerator::new(region_dag);
     match code_generator.generate(&mir) {
@@ -637,7 +976,12 @@ fn run_program(input: &PathBuf) -> anyhow::Result<()> {
 
     // Run all compiler passes
     let mut type_checker = TypeChecker::new();
-    type_checker.check(&hir).map_err(|e| anyhow::anyhow!("Type error: {:?}", e))?;
+    type_checker.check(&hir).map_err(|errors| {
+        for err in &errors {
+            eprintln!("{}", err.diagnostic_with_source(&source));
+        }
+        anyhow::anyhow!("Type checking failed")
+    })?;
     println!("Type checking passed");
 
     let mut effect_checker = EffectChecker::new();
@@ -655,6 +999,14 @@ fn run_program(input: &PathBuf) -> anyhow::Result<()> {
     let mut mir_generator = MirGenerator::new();
     let mir = mir_generator.generate(&hir, region_dag.clone()).map_err(|e| anyhow::anyhow!("MIR error: {:?}", e))?;
     println!("MIR generation passed");
+
+    // MIR verification
+    let verifier = once_mir::MirVerifier::new();
+    if let Err(errors) = verifier.verify_program(&mir) {
+        for err in &errors {
+            eprintln!("MIR verification warning: {}", err);
+        }
+    }
 
     // Try to use real Cranelift code generator
     let mut code_generator = match CodeGenerator::new_with_cranelift(region_dag.clone()) {
@@ -781,21 +1133,6 @@ fn build_project(project_dir: Option<&Path>) -> anyhow::Result<()> {
     println!("  Failed: {}", stats.failed);
     println!("  Pending: {}", stats.pending);
 
-    Ok(())
-}
-
-fn start_lsp_server(stdio: bool) -> anyhow::Result<()> {
-    if stdio {
-        println!("Starting Once LSP server in stdio mode");
-        let rt = tokio::runtime::Runtime::new()?;
-        rt.block_on(async {
-            once_lsp::start_lsp_server().await
-                .map_err(|e| anyhow::anyhow!("LSP server error: {}", e))
-        })?;
-    } else {
-        println!("Starting Once LSP server in TCP mode (not yet implemented — use --stdio mode)");
-    }
-    
     Ok(())
 }
 
@@ -975,6 +1312,9 @@ fn lint_file(input: &PathBuf) -> anyhow::Result<()> {
                 lint::LintKind::UnusedVariable => "unused",
                 lint::LintKind::UnusedImport => "unused-import",
                 lint::LintKind::LinearResourceLeak => "linear-leak",
+                lint::LintKind::CapabilityViolation => "capability",
+                lint::LintKind::BoxRcWarning => "box-rc",
+                lint::LintKind::UnusedEffect => "unused-effect",
             };
             print!("  line {}", w.line);
             if w.line == 0 { print!("?"); }
@@ -1007,4 +1347,239 @@ fn extract_variable_name(error: &str) -> Option<String> {
 /// Find position to insert a consume call
 fn find_insert_position(source: &str, _var_name: &str) -> Option<usize> {
     source.rfind('}').map(|pos| pos - 1)
+}
+
+/// Run tests from a directory or file
+fn run_tests(test_dir: Option<&Path>, filter: Option<&str>, deterministic: bool) -> anyhow::Result<()> {
+    let dir = test_dir.unwrap_or(Path::new("tests"));
+    if deterministic {
+        println!("Running tests in deterministic mode (single-threaded scheduler)");
+    }
+    println!("Running tests from: {}", dir.display());
+    
+    // Discover test files
+    let mut test_files = Vec::new();
+    if dir.is_dir() {
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().map(|e| e == "onc").unwrap_or(false) {
+                test_files.push(path);
+            }
+        }
+    } else if dir.is_file() && dir.extension().map(|e| e == "onc").unwrap_or(false) {
+        test_files.push(dir.to_path_buf());
+    }
+    
+    if test_files.is_empty() {
+        println!("No .onc test files found in {}", dir.display());
+        return Ok(());
+    }
+    
+    let mut total = 0;
+    let mut passed = 0;
+    let mut failed = 0;
+    
+    for test_file in &test_files {
+        let source = fs::read_to_string(test_file)?;
+        let tests = discover_test_functions(&source);
+        
+        if let Some(filter) = filter {
+            println!("\n{} (filtered by '{}')", test_file.display(), filter);
+        } else {
+            println!("\n{}", test_file.display());
+        }
+        
+        for (name, (body, offset)) in &tests {
+            if let Some(filter) = filter {
+                if !name.contains(filter) {
+                    continue;
+                }
+            }
+            total += 1;
+            print!("  test {} ... ", name);
+            
+            match run_single_test(body, deterministic) {
+                Ok(_) => {
+                    println!("ok");
+                    passed += 1;
+                }
+                Err(e) => {
+                    println!("FAILED");
+                    println!("    {}", e);
+                    failed += 1;
+                }
+            }
+        }
+    }
+    
+    println!("\ntest result: {}. {} passed; {} failed; 0 ignored",
+        if failed == 0 { "ok" } else { "FAILED" },
+        passed, failed
+    );
+    
+    if failed > 0 {
+        anyhow::bail!("{} test(s) failed", failed);
+    }
+    
+    Ok(())
+}
+
+/// Discover #[test] functions or test_ prefixed functions in source
+fn discover_test_functions(source: &str) -> Vec<(String, (String, usize))> {
+    let mut tests = Vec::new();
+    let mut in_fn = false;
+    let mut fn_name = String::new();
+    let mut fn_body = String::new();
+    let mut brace_depth = 0;
+    let mut offset = 0;
+    
+    // Parse #[test] annotation
+    for (line_num, line) in source.lines().enumerate() {
+        let trimmed = line.trim();
+        
+        // Detect #[test] annotation
+        if trimmed == "#[test]" {
+            continue;
+        }
+        
+        // Detect test function start
+        if trimmed.starts_with("fn ") {
+            if let Some(name_start) = trimmed.find("fn ") {
+                let rest = &trimmed[name_start + 3..];
+                if let Some(name_end) = rest.find('(') {
+                    fn_name = rest[..name_end].trim().to_string();
+                    in_fn = true;
+                    fn_body.clear();
+                    brace_depth = 0;
+                    offset = line_num;
+                    continue;
+                }
+            }
+        }
+        
+        // Detect test_ prefixed functions (without #[test] annotation)
+        if trimmed.starts_with("fn test_") && !in_fn {
+            if let Some(name_start) = trimmed.find("fn ") {
+                let rest = &trimmed[name_start + 3..];
+                if let Some(name_end) = rest.find('(') {
+                    fn_name = rest[..name_end].trim().to_string();
+                    in_fn = true;
+                    fn_body.clear();
+                    brace_depth = 0;
+                    offset = line_num;
+                    continue;
+                }
+            }
+        }
+        
+        if in_fn {
+            fn_body.push_str(line);
+            fn_body.push('\n');
+            for ch in line.chars() {
+                match ch {
+                    '{' => brace_depth += 1,
+                    '}' => {
+                        if brace_depth > 0 {
+                            brace_depth -= 1;
+                            if brace_depth == 0 {
+                                in_fn = false;
+                                if fn_name.starts_with("test_") || fn_name.contains("test") {
+                                    tests.push((fn_name.clone(), (fn_body.clone(), offset)));
+                                }
+                                fn_name.clear();
+                                fn_body.clear();
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    
+    tests
+}
+
+/// Run a single test: parse, type-check, region-infer, generate MIR, and evaluate
+fn run_single_test(test_body: &str, deterministic: bool) -> anyhow::Result<()> {
+    if deterministic {
+        println!("Deterministic mode: running with single-threaded scheduler");
+    }
+    use once_lex::Lexer;
+    use once_parse::OnceParser;
+    use once_hir::HirBuilder;
+    use once_ty::TypeChecker;
+    use once_linear::LinearityChecker;
+    use once_ty::effects::EffectChecker;
+    use once_rinf::RegionChecker;
+    use once_mir::MirGenerator;
+    use once_mir::MirValue;
+
+    // Extract the function name from test_body if it starts with "fn "
+    let test_name = if test_body.trim_start().starts_with("fn ") {
+        let rest = test_body.trim_start();
+        let name_part = &rest[3..].trim_start();
+        name_part.split('(').next().unwrap_or("test_func").to_string()
+    } else {
+        "test_func".to_string()
+    };
+
+    // Wrap body in a function if not already wrapped
+    let source = if test_body.trim_start().starts_with("fn ") {
+        test_body.to_string()
+    } else {
+        format!("fn {}() -> Bool {{\n{}\n}}", test_name, test_body)
+    };
+
+    let tokens: Vec<_> = Lexer::new(&source).collect();
+    let ast = OnceParser::parse(tokens).map_err(|e| anyhow::anyhow!("Parse error in test '{}': {}", test_name, e))?;
+    let mut builder = HirBuilder::new();
+    let hir = builder.build(ast).map_err(|e| anyhow::anyhow!("HIR error in test '{}': {:?}", test_name, e))?;
+
+    let mut type_checker = TypeChecker::new();
+    type_checker.check(&hir).map_err(|errors| {
+        for err in &errors {
+            eprintln!("{}", err.diagnostic_with_source(test_body));
+        }
+        anyhow::anyhow!("Type error in test '{}': see above", test_name)
+    })?;
+
+    let mut linearity_checker = LinearityChecker::new();
+    linearity_checker.check(&hir).map_err(|e| anyhow::anyhow!("Linearity error in test '{}': {:?}", test_name, e.first().unwrap_or(&once_linear::LinearityError::ResourceNotConsumed("unknown".to_string()))))?;
+
+    let mut effect_checker = EffectChecker::new();
+    effect_checker.check(&hir).map_err(|e| anyhow::anyhow!("Effect error in test '{}': {:?}", test_name, e.first().unwrap_or(&once_ty::effects::EffectError::UnhandledEffect { name: "unknown".to_string(), span: None })))?;
+
+    // Region inference
+    let mut region_checker = RegionChecker::new();
+    let region_dag = region_checker.check(&hir)
+        .map_err(|e| anyhow::anyhow!("Region error in test '{}': {:?}", test_name, e.first().unwrap_or(&once_rinf::RegionError::UnsatisfiableConstraint("unknown".to_string()))))?;
+
+    // MIR generation
+    let mut mir_gen = MirGenerator::new();
+    let mir = mir_gen.generate(&hir, region_dag)
+        .map_err(|e| anyhow::anyhow!("MIR error in test '{}': {:?}", test_name, e.first().unwrap_or(&once_mir::MirError::GenerationFailed("unknown".to_string()))))?;
+
+    // MIR verification
+    let verifier = once_mir::MirVerifier::new();
+    if let Err(errors) = verifier.verify_program(&mir) {
+        for err in &errors {
+            eprintln!("MIR verification warning in test '{}': {}", test_name, err);
+        }
+    }
+
+    if deterministic {
+        let runtime = once_runtime::Runtime::new();
+        runtime.set_deterministic(true);
+    }
+
+    // Evaluate via MIR interpreter
+    let evaluator = mir_eval::MirEvaluator::new(mir);
+    match evaluator.eval_function(&test_name, &[]) {
+        Ok(MirValue::Bool(true)) => Ok(()),
+        Ok(MirValue::Bool(false)) => Err(anyhow::anyhow!("Test '{}' FAILED: returned false", test_name)),
+        Ok(other) => Err(anyhow::anyhow!("Test '{}' must return Bool, got: {:?}", test_name, other)),
+        Err(e) => Err(anyhow::anyhow!("Test '{}' runtime error: {}", test_name, e)),
+    }
 }

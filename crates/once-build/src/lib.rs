@@ -15,7 +15,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use thiserror::Error;
 
 /// Serde helper for PathBuf serialization
@@ -53,6 +53,12 @@ pub enum BuildError {
     
     #[error("FFI security error: {0}")]
     FfiSecurityError(String),
+
+    #[error("Lockfile hash mismatch: {0}")]
+    LockfileHashMismatch(String),
+
+    #[error("Capability ceiling violation: {message}")]
+    CapabilityViolation { message: String },
 }
 
 impl From<std::io::Error> for BuildError {
@@ -369,20 +375,22 @@ pub mod ai {
 
     impl AiSolver for HttpAiSolver {
         fn synthesize(&self, goal_name: &str, params: &[String], return_type: &str, constraints: &[String]) -> Result<String, BuildError> {
-            let constraints_str = if constraints.is_empty() {
-                "none".to_string()
-            } else {
-                constraints.join("; ")
-            };
-            let prompt = format!(
-                "Write a Once language function named '{}' that takes parameters ({}) and returns {}.\n\
-                 Constraints: {}\n\
-                 Return ONLY the function body in valid Once syntax. No explanations.",
-                goal_name,
-                params.join(", "),
-                return_type,
-                constraints_str
-            );
+            let payload = serde_json::json!({
+                "system": "You are a Once language code generator. Output ONLY valid Once source code with no surrounding explanation or markdown formatting.",
+                "goal": {
+                    "name": goal_name,
+                    "signature": {
+                        "params": params.iter().map(|p| {
+                            serde_json::json!({"name": p})
+                        }).collect::<Vec<_>>(),
+                        "return_type": return_type
+                    },
+                    "spec": format!("Generate a Once language function named '{}' that takes parameters ({}) and returns {}.", goal_name, params.join(", "), return_type),
+                    "constraints": constraints,
+                    "examples": []
+                }
+            });
+            let prompt = serde_json::to_string_pretty(&payload)?;
 
             // Attempt HTTP call; fall back to stub if endpoint unavailable
             match self.call_api(&prompt) {
@@ -397,56 +405,78 @@ pub mod ai {
 
     impl HttpAiSolver {
         fn call_api(&self, prompt: &str) -> Result<String, BuildError> {
-            // Construct JSON payload
             let body = serde_json::json!({
                 "model": self.model,
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.3,
             });
-            let body_str = serde_json::to_string(&body)
-                .map_err(|e| BuildError::BuildError(format!("JSON error: {}", e)))?;
-            let mut cmd = std::process::Command::new("curl");
-            cmd.arg("-s")
-               .arg("-X").arg("POST")
-               .arg(&self.endpoint)
-               .arg("-H").arg("Content-Type: application/json")
-               .arg("-d").arg(&body_str);
 
-            if let Some(ref key) = self.api_key {
-                let auth = format!("Authorization: Bearer {}", key);
-                cmd.arg("-H").arg(&auth);
+            let client = reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .user_agent("Once-Compiler/0.1")
+                .build()
+                .map_err(|e| BuildError::BuildError(format!("Failed to create HTTP client: {}", e)))?;
+
+            let mut last_error = None;
+            for attempt in 0..3 {
+                let mut req = client.post(&self.endpoint)
+                    .header("Content-Type", "application/json")
+                    .json(&body);
+
+                if let Some(ref key) = self.api_key {
+                    req = req.header("Authorization", format!("Bearer {}", key));
+                }
+
+                match req.send() {
+                    Ok(response) => {
+                        if !response.status().is_success() {
+                            last_error = Some(BuildError::BuildError(
+                                format!("LLM API returned status {}", response.status())
+                            ));
+                            // Exponential backoff: 1s, 2s, 4s
+                            std::thread::sleep(std::time::Duration::from_secs(1 << attempt));
+                            continue;
+                        }
+
+                        let result: serde_json::Value = response.json()
+                            .map_err(|e| BuildError::BuildError(format!("Failed to parse LLM response: {}", e)))?;
+
+                        let code = result["choices"][0]["message"]["content"]
+                            .as_str()
+                            .unwrap_or("")
+                            .trim()
+                            .to_string();
+
+                        if code.is_empty() {
+                            last_error = Some(BuildError::BuildError("LLM returned empty response".to_string()));
+                            std::thread::sleep(std::time::Duration::from_secs(1 << attempt));
+                            continue;
+                        }
+
+                        return Ok(code);
+                    }
+                    Err(e) => {
+                        let timeout_str = if e.is_timeout() { " (timeout)" } else { "" };
+                        last_error = Some(BuildError::BuildError(
+                            format!("LLM API request failed{}: {}", timeout_str, e)
+                        ));
+                        std::thread::sleep(std::time::Duration::from_secs(1 << attempt));
+                    }
+                }
             }
 
-            let output = cmd.output()
-                .map_err(|e| BuildError::BuildError(format!("curl error: {}", e)))?;
-
-            if !output.status.success() {
-                return Err(BuildError::BuildError("LLM API call failed".to_string()));
-            }
-
-            let response: serde_json::Value = serde_json::from_slice(&output.stdout)
-                .map_err(|e| BuildError::BuildError(format!("Parse error: {}", e)))?;
-
-            let code = response["choices"][0]["message"]["content"]
-                .as_str()
-                .unwrap_or("")
-                .trim()
-                .to_string();
-
-            if code.is_empty() {
-                Err(BuildError::BuildError("LLM returned empty response".to_string()))
-            } else {
-                Ok(code)
-            }
-}
+            Err(last_error.unwrap_or_else(|| BuildError::BuildError("LLM API call failed after 3 retries".to_string())))
+        }
     }
 
-    /// Goal synthesizer that manages AI solver lifecycle.
+    /// Goal synthesizer that manages AI solver lifecycle with file-based caching.
     pub struct GoalSynthesizer {
         pub solver: Box<dyn AiSolver>,
         pub synthesized_goals: HashMap<String, String>,
         /// Content-hash based cache keys for deterministic regeneration
         pub content_hashes: HashMap<String, u64>,
+        /// Directory for file-based AI cache (default: target/ai-cache/)
+        pub cache_dir: Option<std::path::PathBuf>,
     }
 
     impl GoalSynthesizer {
@@ -455,6 +485,7 @@ pub mod ai {
                 solver: Box::new(StubAiSolver),
                 synthesized_goals: HashMap::new(),
                 content_hashes: HashMap::new(),
+                cache_dir: Some(std::path::PathBuf::from("target/ai-cache")),
             }
         }
 
@@ -463,6 +494,7 @@ pub mod ai {
                 solver,
                 synthesized_goals: HashMap::new(),
                 content_hashes: HashMap::new(),
+                cache_dir: Some(std::path::PathBuf::from("target/ai-cache")),
             }
         }
 
@@ -478,8 +510,7 @@ pub mod ai {
             hasher.finish()
         }
 
-        /// Synthesize a goal and cache the result.
-        /// Uses content-hash caching: same input → same cached output.
+        /// Synthesize a goal and cache the result (memory + file).
         pub fn synthesize_goal(
             &mut self,
             name: &str,
@@ -489,13 +520,40 @@ pub mod ai {
         ) -> Result<String, BuildError> {
             let hash = Self::compute_content_hash(name, params, return_type, constraints);
             let cache_key = format!("{}:{}", name, hash);
-            
+
+            // Check memory cache first
             if let Some(cached) = self.synthesized_goals.get(&cache_key) {
                 return Ok(cached.clone());
             }
+
+            // Check file cache next
+            if let Some(ref cache_dir) = self.cache_dir {
+                let cache_file = cache_dir.join(format!("{}.onc", cache_key));
+                if cache_file.exists() {
+                    if let Ok(content) = std::fs::read_to_string(&cache_file) {
+                        self.synthesized_goals.insert(cache_key, content.clone());
+                        self.content_hashes.insert(name.to_string(), hash);
+                        return Ok(content);
+                    }
+                }
+            }
+
+            // LLM synthesize
             let source = self.solver.synthesize(name, params, return_type, constraints)?;
+
+            // Save to file cache
+            if let Some(ref cache_dir) = self.cache_dir {
+                if !cache_dir.exists() {
+                    let _ = std::fs::create_dir_all(cache_dir);
+                }
+                let cache_file = cache_dir.join(format!("{}.onc", cache_key));
+                let _ = std::fs::write(&cache_file, &source);
+            }
+
+            // Save to memory cache
             self.synthesized_goals.insert(cache_key.clone(), source.clone());
             self.content_hashes.insert(name.to_string(), hash);
+
             Ok(source)
         }
 
@@ -566,6 +624,61 @@ pub mod ai {
             }
 
             Ok(true)
+        }
+
+        /// Synthesize a goal with retry logic: parse and type-check the result,
+        /// retrying with error feedback up to 3 attempts before falling back to StubAiSolver.
+        pub fn synthesize_with_retry(
+            &self,
+            goal_name: &str,
+            params: &[String],
+            return_type: &str,
+            constraints: &[String],
+        ) -> Result<String, BuildError> {
+            let mut last_error = String::new();
+            for attempt in 1..=3 {
+                let mut all_constraints = constraints.to_vec();
+                if !last_error.is_empty() {
+                    all_constraints.push(format!("Previous error (attempt {}): {}", attempt, last_error));
+                }
+                let code = self.solver.synthesize(
+                    goal_name,
+                    params,
+                    return_type,
+                    &all_constraints,
+                )?;
+
+                // Try to parse the response
+                let tokens: Vec<_> = once_lex::Lexer::new(&code).collect();
+                if let Err(parse_err) = once_parse::OnceParser::parse(tokens) {
+                    last_error = format!("Parse error: {}", parse_err);
+                    continue;
+                }
+
+                // Try to type-check
+                let tokens: Vec<_> = once_lex::Lexer::new(&code).collect();
+                if let Ok(ast) = once_parse::OnceParser::parse(tokens) {
+                    let mut builder = once_hir::HirBuilder::new();
+                    if let Ok(hir) = builder.build(ast) {
+                        let mut type_checker = once_ty::TypeChecker::new();
+                        if type_checker.check(&hir).is_ok() {
+                            return Ok(code);
+                        } else {
+                            last_error = "Type-checking failed".to_string();
+                            continue;
+                        }
+                    } else {
+                        last_error = "HIR construction failed".to_string();
+                        continue;
+                    }
+                } else {
+                    last_error = "Parse error on retry".to_string();
+                    continue;
+                }
+            }
+
+            // Fall back to StubAiSolver
+            StubAiSolver.synthesize(goal_name, params, return_type, &[])
         }
 
         /// Check if a goal needs regeneration (content hash changed)
@@ -866,6 +979,7 @@ impl BuildTool {
     }
 
     /// Verify capability security: ensure no dependency requires undeclared capabilities
+    /// or declares effects not present in the root capability set.
     fn verify_capabilities(&self) -> Result<(), BuildError> {
         // Collect capabilities declared by the root package
         let root_capabilities: HashSet<String> = self.build_graph.values()
@@ -875,10 +989,25 @@ impl BuildTool {
         for (name, node) in &self.build_graph {
             for cap in &node.target.capabilities {
                 if !root_capabilities.contains(cap) {
-                    return Err(BuildError::FfiSecurityError(format!(
-                        "Target '{}' requires capability '{}' which is not declared in root [capabilities]",
-                        name, cap
-                    )));
+                    return Err(BuildError::CapabilityViolation {
+                        message: format!(
+                            "Target '{}' requires capability '{}' which is not declared in root [capabilities]. \
+                             Add 'requires \"{}\"' to the root package declaration.",
+                            name, cap, cap
+                        ),
+                    });
+                }
+            }
+            for eff in &node.target.effects {
+                if !root_capabilities.contains(eff) {
+                    return Err(BuildError::CapabilityViolation {
+                        message: format!(
+                            "Target '{}' uses effect '{}' which exceeds the root capability ceiling. \
+                             Declared capabilities: {:?}. \
+                             Either add 'requires \"{}\"' to the root package or remove the effect.",
+                            name, eff, root_capabilities, eff
+                        ),
+                    });
                 }
             }
         }
@@ -886,13 +1015,193 @@ impl BuildTool {
         Ok(())
     }
 
-    /// Execute builds
+    /// Execute builds in parallel using depth-grouped dependency resolution
     fn execute_builds(&mut self) -> Result<(), BuildError> {
         let build_order = self.build_order.clone();
-        for target_name in &build_order {
-            self.build_target(target_name)?;
+        let parallel_jobs = self.config.parallel_jobs.max(1);
+
+        // Compute dependency depth for each target
+        let depths = self.compute_depths();
+        let max_depth = depths.values().max().copied().unwrap_or(0);
+
+        // Build targets level by level (depth 0 first, then 1, 2, ...)
+        for depth in 0..=max_depth {
+            let targets_at_depth: Vec<String> = build_order.iter()
+                .filter(|name| depths.get(*name) == Some(&depth))
+                .cloned()
+                .collect();
+
+            if targets_at_depth.is_empty() {
+                continue;
+            }
+
+            if targets_at_depth.len() == 1 || parallel_jobs == 1 {
+                // Single target or single job: sequential
+                for name in &targets_at_depth {
+                    self.build_target(name)?;
+                }
+            } else {
+                // Multiple independent targets: build in parallel with AtomicUsize concurrency limiter
+                let errors = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+                let graph = std::sync::Arc::new(std::sync::Mutex::new(&mut self.build_graph));
+                let config = &self.config;
+                let cache = std::sync::Arc::new(std::sync::Mutex::new(&mut self.cache));
+                let store = std::sync::Arc::new(std::sync::Mutex::new(&mut self.store));
+                let running = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+                std::thread::scope(|s| {
+                    let mut handles = Vec::new();
+
+                    for target_name in &targets_at_depth {
+                        let name = target_name.clone();
+                        let errors = errors.clone();
+                        let graph = graph.clone();
+                        let cache = cache.clone();
+                        let store = store.clone();
+                        let config_ref: &BuildConfig = config;
+                        let running = running.clone();
+
+                        let handle = s.spawn(move || {
+                            // Busy-wait until a slot is available
+                            loop {
+                                let current = running.load(std::sync::atomic::Ordering::SeqCst);
+                                if current < config_ref.parallel_jobs {
+                                    if running.compare_exchange(
+                                        current, current + 1,
+                                        std::sync::atomic::Ordering::SeqCst,
+                                        std::sync::atomic::Ordering::SeqCst,
+                                    ).is_ok() {
+                                        break;
+                                    }
+                                }
+                                std::thread::sleep(std::time::Duration::from_millis(1));
+                            }
+
+                            let result = Self::build_single_target_parallel(&name, &graph, config_ref, &cache, &store);
+                            running.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+
+                            match result {
+                                Ok(()) => {
+                                    if let Ok(mut g) = graph.lock() {
+                                        if let Some(node) = g.get_mut(&name) {
+                                            node.status = BuildStatus::Completed;
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    errors.lock().unwrap().push(e);
+                                }
+                            }
+                        });
+                        handles.push(handle);
+                    }
+
+                    for handle in handles {
+                        let _ = handle.join();
+                    }
+                });
+
+                let errors = errors.lock().unwrap();
+                if !errors.is_empty() {
+                    return Err(errors[0].clone());
+                }
+            }
         }
+
         Ok(())
+    }
+
+    /// Compute the maximum dependency depth for each target
+    fn compute_depths(&self) -> std::collections::HashMap<String, usize> {
+        let mut depths = std::collections::HashMap::new();
+        let mut memo = std::collections::HashMap::new();
+
+        fn depth_of(
+            name: &str,
+            graph: &std::collections::HashMap<String, BuildNode>,
+            depths: &mut std::collections::HashMap<String, usize>,
+            memo: &mut std::collections::HashMap<String, usize>,
+        ) -> usize {
+            if let Some(&d) = memo.get(name) {
+                return d;
+            }
+            let max_dep_depth = if let Some(node) = graph.get(name) {
+                node.dependencies.iter()
+                    .map(|dep| depth_of(dep, graph, depths, memo))
+                    .max()
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            let d = max_dep_depth + 1;
+            memo.insert(name.to_string(), d);
+            depths.insert(name.to_string(), d);
+            d
+        }
+
+        for name in self.build_graph.keys() {
+            depth_of(name, &self.build_graph, &mut depths, &mut memo);
+        }
+
+        depths
+    }
+
+    /// Build a single target without building dependencies (for parallel execution)
+    fn build_single_target_parallel(
+        target_name: &str,
+        graph: &std::sync::Arc<std::sync::Mutex<&mut HashMap<String, BuildNode>>>,
+        config: &BuildConfig,
+        cache: &std::sync::Arc<std::sync::Mutex<&mut HashMap<String, CacheEntry>>>,
+        _store: &std::sync::Arc<std::sync::Mutex<&mut BuildStore>>,
+    ) -> Result<(), BuildError> {
+        let guard = graph.lock().map_err(|_| BuildError::BuildError("Lock poisoned".to_string()))?;
+        let target = guard.get(target_name)
+            .ok_or_else(|| BuildError::BuildError(format!("Target not found: {}", target_name)))?
+            .target.clone();
+        drop(guard);
+
+        // Check cache
+        {
+            let cache_guard = cache.lock().map_err(|_| BuildError::BuildError("Lock poisoned".to_string()))?;
+            let cache_key = format!("{}_{}", target_name, "binary");
+            if cache_guard.contains_key(&cache_key) {
+                return Ok(());
+            }
+        }
+
+        // Build using the Once CLI as a subprocess (same as build_binary)
+        match target.build_type {
+            BuildType::Binary => {
+                for source in &target.sources {
+                    let mut cmd = std::process::Command::new("once");
+                    cmd.arg("build").arg("--input").arg(source);
+
+                    if config.verbose {
+                        println!("[parallel] Building: {:?}", cmd);
+                    }
+
+                    let status = cmd.status().map_err(|e| {
+                        BuildError::BuildError(format!("Failed to execute once build: {}", e))
+                    })?;
+
+                    if !status.success() {
+                        return Err(BuildError::BuildError(
+                            format!("Build failed for target '{}'", target_name)
+                        ));
+                    }
+                }
+                Ok(())
+            }
+            BuildType::Library | BuildType::Test | BuildType::Example => {
+                if let Some(parent) = target.output_path.parent() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| BuildError::BuildError(format!("Failed to create output dir: {}", e)))?;
+                }
+                std::fs::write(&target.output_path, &[])
+                    .map_err(|e| BuildError::BuildError(format!("Failed to write output: {}", e)))?;
+                Ok(())
+            }
+        }
     }
 
     /// Build single target
@@ -1471,7 +1780,7 @@ impl Lockfile {
             if let Some(entry) = entry {
                  let current_hash = utils::calculate_hash(&target.path)?;
                 if entry.hash != current_hash {
-                    return Err(BuildError::DependencyError(format!(
+                    return Err(BuildError::LockfileHashMismatch(format!(
                         "Target '{}' hash mismatch: lockfile={}, current={}",
                         target.name, entry.hash, current_hash
                     )));
