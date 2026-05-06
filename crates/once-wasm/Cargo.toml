@@ -9,7 +9,7 @@ once-ty = { path = "../once-ty" }
 once-rinf = { path = "../once-rinf" }
 once-onceo = { path = "../once-onceo" }
 wasmparser = "0.200"
-wasm-encoder = "0.30"
+wasm-encoder = "0.248"
 wasmtime = "22.0"
 wasmtime-wasi = "22.0"
 serde = { version = "1.0", features = ["derive"] }
