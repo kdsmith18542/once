@@ -1,44 +1,177 @@
-## Project Status
+# Once
 
-**Current Phase**: Stabilization Phase (Phase 0)
+**A modern systems programming language combining memory safety, performance, and simplicity.**
 
-The Once language compiler has successfully stabilized its foundation with working code generation, completing Phase 0 of the recovery plan. The compiler can now build end-to-end for basic examples.
+Once is a systems language with region-based memory management — no garbage collector, no borrow checker. It provides automatic memory management through compile-time region inference, linear types for resource safety, and row-polymorphic effects for capability tracking.
 
-### Development Status
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue)](./LICENSE)
+[![Rust](https://img.shields.io/badge/rust-edition%202021-orange)](./Cargo.toml)
 
-- ✅ **Working**: Runtime actors/channels, region solver algorithm, basic lexer/parser, **real Cranelift code generation**
-- ✅ **Partial**: Type system infrastructure (HM inference scaffold present)
-- ✅ **Parser Support**: Basic syntax including functions, let bindings, expressions
-- ✅ **Build System**: Project compiles successfully and produces working object files
+## Features
 
-### What's Working
+- **Region-based memory management** — Automatic allocation/deallocation via static lifetime inference. No GC pauses, no manual `malloc`/`free`.
+- **Linear types** — Resources tracked at compile time; use-after-free, double-free, and leaks prevented.
+- **Hindley-Milner type inference** — Full type inference with polymorphism. Annotate only where you want to.
+- **Row-polymorphic effects** — Track I/O, networking, spawning, and other side effects in the type system.
+- **Actor-based concurrency** — Isolated actors communicate via channels. Deterministic work-stealing scheduler with deadlock detection.
+- **Cranelift codegen** — Compiles to native machine code via Cranelift. Fast compilation, good runtime performance.
+- **LSP server** — IDE support with diagnostics, completion, hover, go-to-definition, rename, and code actions.
+- **Capability-aware linker** — Link-time enforcement of effect ceilings and type compatibility.
+- **WebAssembly support** — WASM Component Model output with PCC-lite validation.
 
-- ✅ **Runtime System**: Actor model and channel implementation (`once-runtime`, `once-actors`)
-- ✅ **Region Inference Solver**: Region-based memory management algorithm (`once-rinf`)
-- ✅ **Basic Lexer & Parser**: Subset of language syntax (functions, `let` bindings, expressions)
-- ✅ **Design Specifications**: Comprehensive language design documents (architecture, semantics)
-- ✅ **Real Cranelift Code Generation**: End-to-end compilation of basic examples to object files (`once-codegen`)
+## Quick Start
 
-### Known Issues
+```bash
+# Build from source (requires Rust)
+git clone https://github.com/once-lang/once.git
+cd once
+cargo build --release
 
-1. **Parser Incomplete**: Specification example programs using advanced features are rejected; advanced syntax not tokenized/parsed (`using`, effect annotations, `lin`/`aff` types)
-2. **No Full Standard Library**: Limited standard library functionality
-3. **Missing Features**: Advanced type system features (effect constraints, linearity enforcement) not yet connected to codegen
+# Compile a program
+echo 'fn main() -> Unit { print("Hello, Once!") }' > hello.onc
+./target/release/once build --input hello.onc
+```
 
-### Current Limitations
+## Language at a Glance
 
-- ✅ **Build Status**: Project compiles successfully (`cargo build`)
-- ✅ **Codegen**: Working, produces valid object files for supported syntax
-- ⚠️ **Type Checking**: Type inference structures exist but advanced features (effects, linearity) not fully enforced
-- ⚠️ **Test Suite**: Compiles but many tests fail at runtime due to incomplete parser
-- ⚠️ **Language Server**: LSP support planned but not yet implemented
+```once
+// Functions with type inference
+fn greet(name: Str) -> Unit {
+    print("Hello, ".concat(name).concat("!"))
+}
 
-### Next Steps
+// Linear resources — must be consumed exactly once
+fn read_config() -> File {
+    let file = File.open("config.onc")
+    // Compiler ensures file is consumed
+    return file
+}
 
-1. Extend parser to handle `using`, effects, and linear/affine type annotations (Phase 1.1-1.3 from plan.md)
-2. Implement HIR-to-MIR lowering pass for new syntax features
-3. Wire working runtime into generated code
-4. Implement effect and linearity checking in type system
-5. Establish CI with build status reporting
+// Actors with message-passing
+actor Counter {
+    state: Int
 
-For a detailed roadmap with milestones and timelines, see [plan.md](./plan.md).
+    fn inc() -> Unit {
+        state = state + 1
+    }
+
+    fn get() -> Int {
+        return state
+    }
+}
+
+fn main() -> Unit {
+    let counter = spawn(Counter { 0 })
+    counter.send(Counter.inc)
+    let value = counter.send(Counter.get)
+    print("Count: " + value.to_str())
+}
+```
+
+More examples in [`examples/`](./examples/).
+
+## Architecture
+
+The compiler is built as 21 modular Rust crates:
+
+```
+Source (.onc)
+    │
+    ▼
+┌──────────────┐   ┌──────────┐   ┌──────────┐
+│  once-lex    │ → │once-parse│ → │ once-hir │   Frontend
+│  (lexer)     │   │ (parser) │   │ (name IR)│
+└──────────────┘   └──────────┘   └──────────┘
+                                        │
+    ┌───────────────────────────────────┤
+    ▼                  ▼                ▼
+┌──────────┐   ┌──────────────┐  ┌──────────────┐
+│ once-ty  │   │ once-linear  │  │  once-rinf   │   Middle-end
+│ (types)  │   │ (linearity)  │  │  (regions)   │
+└──────────┘   └──────────────┘  └──────────────┘
+    │                  │                │
+    └──────────────────┼────────────────┘
+                       ▼
+              ┌──────────────┐   ┌──────────┐
+              │   once-mir   │ → │once-opt  │   IR + Optimize
+              │   (MIR IR)   │   │(optimize)│
+              └──────────────┘   └──────────┘
+                       │
+                       ▼
+           ┌───────────────────────┐
+           │    once-codegen       │   Backend
+           │    (Cranelift)        │
+           └───────────────────────┘
+                       │
+                       ▼
+                  Native .o
+```
+
+Read the full architecture doc in [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md).
+
+## Repository Structure
+
+```
+once/
+├── crates/              # 21 compiler crates
+│   ├── once-lex/        # Lexer (logos)
+│   ├── once-parse/      # Recursive-descent parser
+│   ├── once-hir/        # High-level IR + name resolution
+│   ├── once-ty/         # HM type inference + effects
+│   ├── once-linear/     # Linear type checker
+│   ├── once-rinf/       # Region inference solver
+│   ├── once-mir/        # Mid-level IR + verifier
+│   ├── once-opt/        # Optimization passes
+│   ├── once-codegen/    # Cranelift code generation
+│   ├── once-runtime/    # Work-stealing runtime
+│   ├── once-actors/     # Actor model
+│   ├── once-std/        # Standard library
+│   ├── once-cli/        # CLI binary
+│   ├── once-build/      # Build system
+│   ├── once-lsp/        # Language Server Protocol
+│   ├── once-linker/     # Capability-aware linker
+│   ├── once-lockfile/   # Content-addressed lockfile
+│   ├── once-onceo/      # .onceo object format
+│   ├── once-wasm/       # WebAssembly support
+│   ├── once-explain/    # Diagnostic visualization
+│   └── once-bounds/     # Bounds checking proofs
+├── examples/            # Example Once programs
+├── tests/               # Test suite
+├── docs/                # Specifications & guides
+└── .github/             # CI/CD & templates
+```
+
+## Building & Testing
+
+```bash
+# Build
+cargo build --release
+
+# Run all tests
+cargo test
+
+# Test a specific crate
+cargo test -p once-parse
+
+# Lint
+cargo clippy --all-targets --all-features -- -D warnings
+
+# Format
+cargo fmt --all -- --check
+```
+
+## Documentation
+
+- [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) — Compiler architecture
+- [`docs/USER_GUIDE.md`](./docs/USER_GUIDE.md) — Language user guide
+- [`docs/`](./docs/) — Language specifications (Parts 1–9)
+- [`CONTRIBUTING.md`](./CONTRIBUTING.md) — Contribution guide
+- [`CHANGELOG.md`](./CHANGELOG.md) — Release history
+
+## Contributing
+
+Contributions are welcome. See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for the workflow and [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md) for community guidelines.
+
+## License
+
+Licensed under either of [MIT License](./LICENSE) or [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0), at your option.
