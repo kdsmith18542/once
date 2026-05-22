@@ -21,7 +21,7 @@ jobs:
     - uses: actions/checkout@v6
     
     - name: Install Rust
-      uses: dtolnay/rust-toolchain@master
+      uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
       with:
         toolchain: ${{ matrix.rust }}
         override: true
@@ -78,7 +78,7 @@ jobs:
       uses: actions/download-artifact@v8
     
     - name: Create GitHub Release
-      uses: softprops/action-gh-release@v1
+      uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
       with:
         files: |
           once-ubuntu-latest-*/once-ubuntu-latest-*.tar.gz
