@@ -37,7 +37,7 @@ description = "Once: A simple-to-learn systems language with region-based memory
 
 [workspace.dependencies]
 # Core dependencies
-logos = "0.14"
+logos = "0.16"
 chumsky = "0.9"
 thiserror = "1.0"
 anyhow = "1.0"
