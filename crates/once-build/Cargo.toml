@@ -13,4 +13,4 @@ once-ty = { path = "../once-ty" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-reqwest = { version = "0.12", features = ["blocking", "json"] }
+reqwest = { version = "0.13", features = ["blocking", "json"] }
