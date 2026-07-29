@@ -78,7 +78,7 @@ jobs:
       uses: actions/download-artifact@v8
     
     - name: Create GitHub Release
-      uses: softprops/action-gh-release@v1
+      uses: softprops/action-gh-release@v3
       with:
         files: |
           once-ubuntu-latest-*/once-ubuntu-latest-*.tar.gz
